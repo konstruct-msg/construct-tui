@@ -1,7 +1,9 @@
 mod app;
+mod config;
 mod event;
-mod tui;
+mod grpc;
 mod screens;
+mod tui;
 
 use anyhow::Result;
 
