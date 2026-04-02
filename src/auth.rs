@@ -118,3 +118,58 @@ pub async fn register_new_device(
         access_token: resp.access_token,
     })
 }
+
+/// Link this TUI client to an existing account using a link token
+/// generated on another device (iOS/Desktop Settings → Add Device).
+///
+/// Generates fresh device keys, then calls `ConfirmDeviceLink` with the token.
+pub async fn link_existing_device(server_url: &str, link_token: &str) -> Result<AuthResult> {
+    // 1. Generate fresh device keys (same as register_new_device)
+    let signing_pair = Ed25519KeyPair::generate();
+    let identity_pair = X25519KeyPair::generate();
+    let spk_pair = X25519KeyPair::generate();
+
+    let device_id = derive_device_id(&identity_pair.public_key);
+
+    let prologue = build_prologue(SuiteID::CLASSIC);
+    let mut spk_msg = prologue;
+    spk_msg.extend_from_slice(&spk_pair.public_key);
+    let sk = signing_pair.get_signing_key();
+    let spk_sig = sk.sign(&spk_msg);
+
+    let public_keys = DevicePublicKeys {
+        verifying_key: B64.encode(signing_pair.public_key),
+        identity_public: B64.encode(identity_pair.public_key),
+        signed_prekey_public: B64.encode(spk_pair.public_key),
+        signed_prekey_signature: B64.encode(spk_sig.to_bytes()),
+        crypto_suite: "Curve25519+Ed25519".into(),
+    };
+
+    // 2. Confirm link — server verifies the token and returns JWT
+    let mut client = ConstructClient::connect(server_url)
+        .await
+        .context("connecting to server")?;
+
+    let resp = client
+        .confirm_device_link(link_token, &device_id, public_keys)
+        .await
+        .context("confirm_device_link RPC failed")?;
+
+    // 3. Persist session
+    let session = Session {
+        signing_key_hex: hex::encode(*signing_pair.private_key),
+        identity_key_hex: hex::encode(*identity_pair.private_key),
+        device_id: device_id.clone(),
+        user_id: resp.user_id.clone(),
+        access_token: resp.access_token.clone(),
+        refresh_token: resp.refresh_token.clone(),
+        expires_at: resp.expires_at,
+    };
+    save_session(&session)?;
+
+    Ok(AuthResult {
+        user_id: resp.user_id,
+        device_id,
+        access_token: resp.access_token,
+    })
+}

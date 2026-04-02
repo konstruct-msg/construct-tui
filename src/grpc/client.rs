@@ -7,15 +7,27 @@ use tonic::{
 
 use crate::grpc::services::{
     auth_service_client::AuthServiceClient,
+    check_join_request_status_response::Status as JoinStatus,
     device_link_service_client::DeviceLinkServiceClient,
     AuthenticateDeviceRequest,
     AuthTokensResponse,
+    CheckJoinRequestStatusRequest,
     ConfirmDeviceLinkRequest,
     DevicePublicKeys,
     GetPowChallengeRequest,
+    JoinRequestPayload,
     PowSolution as ProtoPowSolution,
     RegisterDeviceRequest,
 };
+
+/// Result of polling CheckJoinRequestStatus.
+#[derive(Debug)]
+pub enum JoinPollResult {
+    Pending,
+    Approved(AuthTokensResponse),
+    Rejected,
+    Expired,
+}
 
 /// Construct server gRPC client wrapper.
 pub struct ConstructClient {
@@ -142,5 +154,57 @@ impl ConstructClient {
             .into_inner();
 
         Ok(resp)
+    }
+
+    /// Flow B step 1: submit this device's keys so the phone can scan / approve.
+    pub async fn submit_join_request(
+        &mut self,
+        device_id: &str,
+        public_keys: &DevicePublicKeys,
+        device_name: &str,
+        platform: &str,
+    ) -> Result<()> {
+        let payload = JoinRequestPayload {
+            pending_device_id: device_id.to_string(),
+            identity_public_b64: public_keys.identity_public.clone(),
+            verifying_key_b64: public_keys.verifying_key.clone(),
+            signed_prekey_public_b64: public_keys.signed_prekey_public.clone(),
+            signed_prekey_signature_b64: public_keys.signed_prekey_signature.clone(),
+            device_name: device_name.to_string(),
+            platform: platform.to_string(),
+        };
+        self.link
+            .submit_join_request(Request::new(payload))
+            .await
+            .context("submit_join_request RPC failed")?;
+        Ok(())
+    }
+
+    /// Flow B step 2: poll for phone approval.
+    pub async fn check_join_request_status(
+        &mut self,
+        pending_device_id: &str,
+    ) -> Result<JoinPollResult> {
+        let resp = self
+            .link
+            .check_join_request_status(Request::new(CheckJoinRequestStatusRequest {
+                pending_device_id: pending_device_id.to_string(),
+            }))
+            .await
+            .context("check_join_request_status RPC failed")?
+            .into_inner();
+
+        let result = match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Pending) {
+            JoinStatus::Approved => {
+                let tokens = resp.tokens.ok_or_else(|| {
+                    anyhow::anyhow!("APPROVED status but no tokens in response")
+                })?;
+                JoinPollResult::Approved(tokens)
+            }
+            JoinStatus::Rejected => JoinPollResult::Rejected,
+            JoinStatus::Expired => JoinPollResult::Expired,
+            JoinStatus::Pending => JoinPollResult::Pending,
+        };
+        Ok(result)
     }
 }

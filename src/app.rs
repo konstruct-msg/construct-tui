@@ -13,7 +13,7 @@ use crate::{
     config::load_config,
     event::{Event, EventHandler, is_quit},
     screens::onboarding::OnboardingField,
-    screens::{ChatListPane, ChatViewPane, OnboardingScreen},
+    screens::{ChatListPane, ChatViewPane, DeviceLinkScreen, OnboardingScreen},
     tui::Tui,
 };
 
@@ -23,6 +23,8 @@ enum Screen {
     Startup,
     /// Onboarding form (first run or after logout).
     Onboarding,
+    /// Device link form — enter link token from another device.
+    DeviceLink,
     /// Auth request in flight — show spinner message.
     Connecting(String),
     /// Auth failed — show error, return to onboarding.
@@ -48,6 +50,7 @@ enum AuthMsg {
 pub struct App {
     screen: Screen,
     onboarding: OnboardingScreen,
+    device_link: DeviceLinkScreen,
     focus: Focus,
     chat_list: ChatListPane,
     chat_view: ChatViewPane,
@@ -72,6 +75,7 @@ impl App {
         Self {
             screen: Screen::Startup,
             onboarding: OnboardingScreen::new(),
+            device_link: DeviceLinkScreen::new(),
             focus: Focus::ContactList,
             chat_list,
             chat_view: ChatViewPane::new(initial_name),
@@ -138,6 +142,20 @@ impl App {
         self.screen = Screen::Connecting("Solving proof-of-work, registering device…".into());
     }
 
+    fn start_auth_link(&mut self, token: String) {
+        let (tx, rx) = mpsc::channel(1);
+        self.auth_rx = Some(rx);
+        let url = self.server_url.clone();
+        tokio::spawn(async move {
+            let msg = match crate::auth::link_existing_device(&url, &token).await {
+                Ok(r) => AuthMsg::Success { user_id: r.user_id },
+                Err(e) => AuthMsg::Failure(e.to_string()),
+            };
+            let _ = tx.send(msg).await;
+        });
+        self.screen = Screen::Connecting("Confirming device link…".into());
+    }
+
     fn poll_auth(&mut self) {
         let Some(rx) = self.auth_rx.as_mut() else {
             return;
@@ -191,6 +209,7 @@ impl App {
                 self.screen = Screen::Onboarding;
             }
             Screen::Onboarding => self.handle_onboarding(key),
+            Screen::DeviceLink => self.handle_device_link(key),
             Screen::Main => self.handle_main(key),
         }
     }
@@ -207,8 +226,10 @@ impl App {
             KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
                 self.running = false;
             }
+            // Tab switches to device-link flow
             KeyCode::Tab | KeyCode::BackTab => {
-                self.onboarding.next_field();
+                self.device_link = DeviceLinkScreen::new();
+                self.screen = Screen::DeviceLink;
             }
             KeyCode::Enter => {
                 let username = self.onboarding.username.trim().to_string();
@@ -227,6 +248,33 @@ impl App {
             KeyCode::Char(c) => {
                 self.onboarding.push_char(c);
                 self.onboarding.status = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_device_link(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
+                self.screen = Screen::Onboarding;
+            }
+            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                self.running = false;
+            }
+            KeyCode::Enter => {
+                let token = self.device_link.token.trim().to_string();
+                if token.is_empty() {
+                    self.device_link.set_status("Paste the link token first", true);
+                } else {
+                    self.device_link.clear_status();
+                    self.start_auth_link(token);
+                }
+            }
+            KeyCode::Backspace => {
+                self.device_link.pop_char();
+            }
+            KeyCode::Char(c) => {
+                self.device_link.push_char(c);
             }
             _ => {}
         }
@@ -291,10 +339,12 @@ impl App {
         match &self.screen.clone() {
             Screen::Onboarding | Screen::AuthError(_) => {
                 frame.render_widget(&self.onboarding, frame.area());
-                // Overlay error if present
                 if let Screen::AuthError(msg) = &self.screen {
                     self.render_error_overlay(frame, msg.clone());
                 }
+            }
+            Screen::DeviceLink => {
+                frame.render_widget(&self.device_link, frame.area());
             }
             Screen::Startup => {
                 frame.render_widget(&self.onboarding, frame.area());
