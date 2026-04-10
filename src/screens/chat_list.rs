@@ -22,27 +22,30 @@ pub struct ChatListPane {
 
 impl ChatListPane {
     pub fn new() -> Self {
-        // Placeholder contacts for the skeleton UI
-        let contacts = vec![
-            Contact {
-                id: "1".into(),
-                display_name: "max".into(),
-                unread: 2,
-                last_message: Some("Привет!".into()),
-            },
-            Contact {
-                id: "2".into(),
-                display_name: "anna".into(),
-                unread: 0,
-                last_message: Some("Ок, договорились".into()),
-            },
-        ];
         let mut state = ListState::default();
-        state.select(Some(0));
+        state.select(None);
         Self {
-            contacts,
+            contacts: Vec::new(),
             state,
             focused: true,
+        }
+    }
+
+    /// Replace the full contacts list (called after loading from DB on login).
+    pub fn set_contacts(&mut self, contacts: Vec<Contact>) {
+        self.contacts = contacts;
+        if !self.contacts.is_empty() {
+            self.state.select(Some(0));
+        } else {
+            self.state.select(None);
+        }
+    }
+
+    /// Append a single newly-added contact.
+    pub fn add_contact(&mut self, contact: Contact) {
+        self.contacts.push(contact);
+        if self.state.selected().is_none() {
+            self.state.select(Some(0));
         }
     }
 

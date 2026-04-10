@@ -18,7 +18,7 @@ use crate::{
     screens::{
         ChatListPane, ChatViewPane, ConnectionState, ContactSearchScreen, DeviceLinkScreen,
         OnboardingScreen, SafetyNumberScreen, SettingsAction, SettingsScreen, StatusBar,
-        UnlockMode, UnlockScreen,
+        UnlockMode, UnlockScreen, chat_list::Contact, contact_search::SearchResult,
     },
     tui::Tui,
 };
@@ -80,6 +80,10 @@ pub(crate) enum InternalEvent {
     Auth(AuthMsg),
     TokenRefresh(TokenRefreshMsg),
     Bridge(BridgeEvent),
+    /// Result of a gRPC FindUser search, delivered back to the UI.
+    ContactSearchResult(Vec<SearchResult>),
+    /// gRPC search failed.
+    ContactSearchError(String),
 }
 
 /// Type alias referenced by `orchestrator_task` to send bridge events back to the UI.
@@ -135,6 +139,9 @@ pub struct App {
     orch_handle: Option<crate::orchestrator_task::OrchestratorHandle>,
     /// Command channel to the gRPC stream worker.
     stream_tx: Option<mpsc::Sender<crate::streaming::StreamCmd>>,
+    /// Read-only storage connection for UI queries (messages, contacts).
+    /// Separate connection from orchestrator's write connection.
+    read_storage: Option<crate::storage::Storage>,
     /// Device ID of the authenticated device (set after successful auth).
     device_id: String,
     /// Bearer token for gRPC calls (set after successful auth, refreshed on token refresh).
@@ -185,6 +192,7 @@ impl App {
             safety_number: None,
             orch_handle: None,
             stream_tx: None,
+            read_storage: None,
             device_id: String::new(),
             access_token: String::new(),
         }
@@ -338,6 +346,12 @@ impl App {
             InternalEvent::Auth(msg) => self.handle_auth_msg(msg),
             InternalEvent::TokenRefresh(msg) => self.handle_token_refresh_msg(msg),
             InternalEvent::Bridge(evt) => self.handle_bridge_event(evt),
+            InternalEvent::ContactSearchResult(results) => {
+                self.contact_search.set_results(results);
+            }
+            InternalEvent::ContactSearchError(msg) => {
+                self.contact_search.set_error(msg);
+            }
         }
     }
 
@@ -487,29 +501,57 @@ impl App {
             }
         };
 
-        let orchestrator = Orchestrator::new(client, user_id.clone());
+        let mut orchestrator = Orchestrator::new(client, user_id.clone());
 
-        let storage = if let Some(ref sk) = self.session_key {
-            match Storage::open(sk.keys.database.as_ref()) {
-                Ok(s) => s,
-                Err(e) => {
+        // ── Open storage (two connections: orchestrator writes, UI reads) ─────
+        let (storage, read_storage) = if let Some(ref sk) = self.session_key {
+            let db_key = sk.keys.database.as_ref();
+            match (Storage::open(db_key), Storage::open(db_key)) {
+                (Ok(s1), Ok(s2)) => (s1, s2),
+                (Err(e), _) | (_, Err(e)) => {
                     self.status = format!("Storage open error: {e}");
                     return;
                 }
             }
         } else {
-            match Storage::open_unencrypted() {
-                Ok(s) => s,
-                Err(e) => {
+            match (Storage::open_unencrypted(), Storage::open_unencrypted()) {
+                (Ok(s1), Ok(s2)) => (s1, s2),
+                (Err(e), _) | (_, Err(e)) => {
                     self.status = format!("Storage open error: {e}");
                     return;
                 }
             }
         };
 
-        // Spawn the gRPC stream worker.
+        // ── Load contacts from DB, populate chat list, collect IDs for stream ─
+        let contact_ids: Vec<String> = match read_storage.get_contacts() {
+            Ok(stored) => {
+                let contacts: Vec<_> = stored
+                    .iter()
+                    .map(|c| crate::screens::chat_list::Contact {
+                        id: c.user_id.clone(),
+                        display_name: c.display_name.clone(),
+                        unread: 0,
+                        last_message: None,
+                    })
+                    .collect();
+                let ids: Vec<String> = stored.into_iter().map(|c| c.user_id).collect();
+                self.chat_list.set_contacts(contacts);
+                ids
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load contacts: {e}");
+                Vec::new()
+            }
+        };
+        self.read_storage = Some(read_storage);
+
+        // ── Generate OTPKs before moving orchestrator into task ───────────────
+        let otpks = orchestrator.generate_otpks(100).unwrap_or_default();
+
+        // ── Spawn gRPC stream worker subscribed to known contacts ─────────────
         let (stream_tx, mut stream_rx) =
-            spawn_stream_worker(self.server_url.clone(), access_token.clone(), vec![]);
+            spawn_stream_worker(self.server_url.clone(), access_token.clone(), contact_ids);
         self.stream_tx = Some(stream_tx.clone());
 
         // Spawn the Orchestrator actor task.
@@ -519,14 +561,33 @@ impl App {
             stream_tx,
             self.internal_tx.clone(),
             self.server_url.clone(),
-            access_token,
+            access_token.clone(),
             user_id,
-            device_id,
+            device_id.clone(),
         );
 
         // Fire AppLaunched to trigger session GC / prewarm sweep.
         orch_handle.send(construct_core::orchestration::actions::IncomingEvent::AppLaunched);
         self.orch_handle = Some(orch_handle.clone());
+
+        // ── Upload OTPKs in background ────────────────────────────────────────
+        if !otpks.is_empty() {
+            let url = self.server_url.clone();
+            let token = access_token.clone();
+            let did = device_id.clone();
+            tokio::spawn(async move {
+                match crate::grpc::client::KeyUserClient::connect(&url, &token).await {
+                    Ok(mut client) => {
+                        if let Err(e) = client.upload_pre_keys(&did, otpks).await {
+                            tracing::warn!("OTPK upload failed: {e}");
+                        } else {
+                            tracing::info!("OTPKs uploaded successfully");
+                        }
+                    }
+                    Err(e) => tracing::warn!("OTPK upload: gRPC connect failed: {e}"),
+                }
+            });
+        }
 
         // Relay stream events to the Orchestrator.
         let orch_tx = orch_handle.tx.clone();
@@ -892,6 +953,33 @@ impl App {
                     if let Some(c) = self.chat_list.selected_contact() {
                         self.chat_view.contact_name = c.display_name.clone();
                         self.chat_view.messages.clear();
+                        // Load history from DB (last 50 messages).
+                        if let Some(ref storage) = self.read_storage {
+                            let peer_id = c.id.clone();
+                            if let Ok(history) = storage.get_messages(&peer_id, 50) {
+                                use crate::screens::chat_view::{ChatMessage, MessageKind};
+                                for msg in history {
+                                    let kind = if msg.direction == "sent" {
+                                        MessageKind::Sent
+                                    } else {
+                                        MessageKind::Received
+                                    };
+                                    // Format stored ms timestamp as HH:MM.
+                                    let time = {
+                                        let secs = msg.timestamp_ms / 1000;
+                                        let h = (secs / 3600) % 24;
+                                        let m = (secs / 60) % 60;
+                                        format!("{:02}:{:02}", h, m)
+                                    };
+                                    self.chat_view.messages.push(ChatMessage {
+                                        id: msg.id,
+                                        kind,
+                                        text: msg.text,
+                                        time,
+                                    });
+                                }
+                            }
+                        }
                     }
                     self.set_focus(Focus::ChatView);
                 }
@@ -1020,33 +1108,70 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.contact_search.prev(),
             KeyCode::Down | KeyCode::Char('j') => self.contact_search.next(),
             KeyCode::Enter => {
-                if self.contact_search.results.is_empty() {
-                    // No results yet — trigger search
-                    let query = self.contact_search.query.trim().to_string();
-                    if !query.is_empty() {
-                        self.contact_search.searching = true;
-                        // TODO: dispatch gRPC SearchUsers(query) → call set_results / set_error
-                        self.contact_search
-                            .set_error("Search not yet connected to gRPC");
-                    }
-                } else {
-                    // Results visible — Enter = search again
-                    let query = self.contact_search.query.trim().to_string();
-                    if !query.is_empty() {
-                        self.contact_search.searching = true;
-                        self.contact_search
-                            .set_error("Search not yet connected to gRPC");
-                    }
+                let query = self.contact_search.query.trim().to_string();
+                if !query.is_empty() {
+                    self.contact_search.searching = true;
+                    let url = self.server_url.clone();
+                    let token = self.access_token.clone();
+                    let tx = self.internal_tx.clone();
+                    let q = query.clone();
+                    tokio::spawn(async move {
+                        match crate::grpc::client::KeyUserClient::connect(&url, &token).await {
+                            Ok(mut client) => match client.find_user(&q).await {
+                                Ok(Some(user_id)) => {
+                                    let _ = tx.send(InternalEvent::ContactSearchResult(vec![
+                                        SearchResult {
+                                            user_id,
+                                            username: q.clone(),
+                                            display_name: q,
+                                        },
+                                    ]));
+                                }
+                                Ok(None) => {
+                                    let _ = tx.send(InternalEvent::ContactSearchResult(vec![]));
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(InternalEvent::ContactSearchError(format!(
+                                        "Search error: {e}"
+                                    )));
+                                }
+                            },
+                            Err(e) => {
+                                let _ = tx.send(InternalEvent::ContactSearchError(format!(
+                                    "Connect error: {e}"
+                                )));
+                            }
+                        }
+                    });
                 }
             }
             KeyCode::Tab => self.contact_search.next(),
             KeyCode::BackTab => self.contact_search.prev(),
-            // Ctrl+A — add selected contact
+            // Ctrl+A — add selected contact and save to DB
             KeyCode::Char('a') if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
                 if let Some(result) = self.contact_search.selected().cloned() {
-                    // TODO: dispatch gRPC AddContact(result.user_id)
-                    self.status =
-                        format!("Add contact '{}' — not yet implemented", result.username);
+                    let new_contact = Contact {
+                        id: result.user_id.clone(),
+                        display_name: result.display_name.clone(),
+                        unread: 0,
+                        last_message: None,
+                    };
+                    // Persist to DB
+                    if let Some(ref storage) = self.read_storage {
+                        let _ = storage.upsert_contact(&crate::storage::StoredContact {
+                            user_id: result.user_id.clone(),
+                            display_name: result.display_name.clone(),
+                            identity_key_b64: String::new(),
+                        });
+                    }
+                    // Subscribe to stream for this contact
+                    if let Some(ref tx) = self.stream_tx {
+                        let _ = tx.try_send(crate::streaming::StreamCmd::Subscribe(
+                            result.user_id.clone(),
+                        ));
+                    }
+                    self.chat_list.add_contact(new_contact);
+                    self.status = format!("Added @{}", result.username);
                     self.contact_search.reset();
                     self.screen = Screen::Main;
                 }
@@ -1068,6 +1193,7 @@ impl App {
         if let Some(ref tx) = self.stream_tx.take() {
             let _ = tx.try_send(crate::streaming::StreamCmd::Shutdown);
         }
+        self.read_storage = None;
         self.session_key = None;
         self.current_session = None;
         self.pending_session = None;
