@@ -24,7 +24,7 @@ use crate::grpc::shared::proto::services::v1::{
 #[derive(Debug)]
 pub enum StreamCmd {
     /// Send an envelope to a recipient.
-    Send(Envelope),
+    Send(Box<Envelope>),
     /// Subscribe to updates for this user (call when entering a conversation).
     Subscribe(String),
     /// Shut the worker down cleanly.
@@ -35,7 +35,7 @@ pub enum StreamCmd {
 #[derive(Debug)]
 pub enum StreamEvent {
     /// An incoming message envelope.
-    Message(Envelope),
+    Message(Box<Envelope>),
     /// Delivery receipt ACK from server (echoed message_id).
     Ack(String),
     /// Connection state changed.
@@ -216,7 +216,7 @@ async fn run_stream(
                     }
                     StreamCmd::Send(envelope) => {
                         let req = MessageStreamRequest {
-                            request: Some(StreamReq::Send(envelope)),
+                            request: Some(StreamReq::Send(*envelope)),
                             request_id: uuid::Uuid::new_v4().to_string(),
                             attempt_id: None,
                         };
@@ -245,7 +245,7 @@ async fn handle_server_message(resp: MessageStreamResponse, event_tx: &mpsc::Sen
     };
     match response {
         Response::Message(envelope) => {
-            let _ = event_tx.send(StreamEvent::Message(envelope)).await;
+            let _ = event_tx.send(StreamEvent::Message(Box::new(envelope))).await;
         }
         Response::Ack(ack) => {
             let _ = event_tx.send(StreamEvent::Ack(ack.message_id)).await;

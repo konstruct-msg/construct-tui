@@ -11,22 +11,24 @@ use ratatui::{
 };
 
 /// Live connection state — updated by the streaming worker via InternalEvent.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ConnectionState {
     /// Not yet connected (startup).
+    #[default]
     Disconnected,
     /// Currently establishing the connection.
     Connecting { transport: String },
     /// Fully connected.
-    Connected { transport: String, latency_ms: Option<u32> },
+    Connected {
+        transport: String,
+        latency_ms: Option<u32>,
+    },
     /// Lost connection, trying to restore.
-    Reconnecting { attempt: u32, next_retry: Instant, interval: Duration },
-}
-
-impl Default for ConnectionState {
-    fn default() -> Self {
-        Self::Disconnected
-    }
+    Reconnecting {
+        attempt: u32,
+        next_retry: Instant,
+        interval: Duration,
+    },
 }
 
 impl ConnectionState {
@@ -35,13 +37,23 @@ impl ConnectionState {
         match self {
             Self::Disconnected => "✗ disconnected".into(),
             Self::Connecting { transport } => format!("⠋ connecting ({transport})…"),
-            Self::Connected { transport, latency_ms: Some(ms) } => {
+            Self::Connected {
+                transport,
+                latency_ms: Some(ms),
+            } => {
                 format!("● {transport}  {ms}ms")
             }
-            Self::Connected { transport, latency_ms: None } => {
+            Self::Connected {
+                transport,
+                latency_ms: None,
+            } => {
                 format!("● {transport}")
             }
-            Self::Reconnecting { attempt, next_retry, interval } => {
+            Self::Reconnecting {
+                attempt,
+                next_retry,
+                interval,
+            } => {
                 let secs_left = next_retry
                     .saturating_duration_since(Instant::now())
                     .as_secs();

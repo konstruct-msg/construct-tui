@@ -8,7 +8,9 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
+    widgets::{
+        Block, BorderType, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -55,14 +57,20 @@ impl ContactSearchScreen {
     }
 
     pub fn next(&mut self) {
-        if self.results.is_empty() { return; }
+        if self.results.is_empty() {
+            return;
+        }
         let max = self.results.len() - 1;
         let i = self.state.selected().map(|i| (i + 1).min(max)).unwrap_or(0);
         self.state.select(Some(i));
     }
 
     pub fn prev(&mut self) {
-        let i = self.state.selected().map(|i| i.saturating_sub(1)).unwrap_or(0);
+        let i = self
+            .state
+            .selected()
+            .map(|i| i.saturating_sub(1))
+            .unwrap_or(0);
         self.state.select(Some(i));
     }
 
@@ -106,10 +114,10 @@ impl Widget for &mut ContactSearchScreen {
         outer.render(area, buf);
 
         let chunks = Layout::vertical([
-            Constraint::Length(1),  // hint
-            Constraint::Length(3),  // search box
-            Constraint::Length(1),  // status
-            Constraint::Min(1),     // results list
+            Constraint::Length(1), // hint
+            Constraint::Length(3), // search box
+            Constraint::Length(1), // status
+            Constraint::Min(1),    // results list
         ])
         .split(inner);
 
@@ -140,7 +148,11 @@ impl Widget for &mut ContactSearchScreen {
 
         // Status
         if let Some(ref msg) = self.status {
-            let color = if self.is_error { Color::Red } else { Color::Green };
+            let color = if self.is_error {
+                Color::Red
+            } else {
+                Color::Green
+            };
             Paragraph::new(Line::from(Span::styled(
                 format!("  {}", msg),
                 Style::default().fg(color),
@@ -155,15 +167,15 @@ impl Widget for &mut ContactSearchScreen {
             .map(|r| {
                 let name = Span::styled(
                     format!("  @{}", r.username),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 );
                 let uid = Span::styled(
                     format!("  {}", &r.user_id[..8.min(r.user_id.len())]),
                     Style::default().fg(Color::DarkGray),
                 );
-                ListItem::new(vec![
-                    Line::from(vec![name, uid]),
-                ])
+                ListItem::new(vec![Line::from(vec![name, uid])])
             })
             .collect();
 

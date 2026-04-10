@@ -5,7 +5,9 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
+    widgets::{
+        Block, BorderType, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+    },
 };
 
 /// An action the user triggered from the settings screen.
@@ -51,16 +53,44 @@ impl SettingsScreen {
         let device_id = device_id.into();
         let user_id = user_id.into();
 
-        let pq_str = if pq_active { "yes (Kyber-768)" } else { "no (classic)" };
+        let pq_str = if pq_active {
+            "yes (Kyber-768)"
+        } else {
+            "no (classic)"
+        };
 
         let items = vec![
-            SettingsItem { label: "Server".into(),    value: server.clone(),          action: None },
-            SettingsItem { label: "Transport".into(),  value: transport_label.clone(), action: None },
-            SettingsItem { label: "Device ID".into(),  value: device_id.clone(),       action: None },
-            SettingsItem { label: "User ID".into(),    value: user_id.clone(),         action: None },
-            SettingsItem { label: "Post-quantum".into(), value: pq_str.into(),         action: None },
+            SettingsItem {
+                label: "Server".into(),
+                value: server.clone(),
+                action: None,
+            },
+            SettingsItem {
+                label: "Transport".into(),
+                value: transport_label.clone(),
+                action: None,
+            },
+            SettingsItem {
+                label: "Device ID".into(),
+                value: device_id.clone(),
+                action: None,
+            },
+            SettingsItem {
+                label: "User ID".into(),
+                value: user_id.clone(),
+                action: None,
+            },
+            SettingsItem {
+                label: "Post-quantum".into(),
+                value: pq_str.into(),
+                action: None,
+            },
             // Separator (empty value)
-            SettingsItem { label: String::new(), value: String::new(), action: None },
+            SettingsItem {
+                label: String::new(),
+                value: String::new(),
+                action: None,
+            },
             // Actions
             SettingsItem {
                 label: "[S] Safety number".into(),
@@ -106,7 +136,11 @@ impl SettingsScreen {
     }
 
     pub fn prev(&mut self) {
-        let i = self.state.selected().map(|i| i.saturating_sub(1)).unwrap_or(0);
+        let i = self
+            .state
+            .selected()
+            .map(|i| i.saturating_sub(1))
+            .unwrap_or(0);
         self.state.select(Some(i));
     }
 

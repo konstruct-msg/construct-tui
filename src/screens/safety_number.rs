@@ -69,10 +69,7 @@ impl SafetyNumberScreen {
     /// Format the safety number as a 4×3 grid of groups.
     fn formatted_grid(&self) -> Vec<String> {
         let groups: Vec<&str> = self.number.split_whitespace().collect();
-        groups
-            .chunks(3)
-            .map(|row| row.join("  "))
-            .collect()
+        groups.chunks(3).map(|row| row.join("  ")).collect()
     }
 }
 

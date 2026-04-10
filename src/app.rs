@@ -413,21 +413,21 @@ impl App {
         expires_at: i64,
     ) -> Option<Session> {
         // Try to load the current session from disk and patch the tokens.
-        if let Some(ref passphrase) = self.session_passphrase {
-            if let Ok(Some(mut session)) = config::load_session_encrypted(passphrase) {
-                session.access_token = access_token;
-                session.refresh_token = refresh_token;
-                session.expires_at = expires_at;
-                return Some(session);
-            }
+        if let Some(ref passphrase) = self.session_passphrase
+            && let Ok(Some(mut session)) = config::load_session_encrypted(passphrase)
+        {
+            session.access_token = access_token;
+            session.refresh_token = refresh_token;
+            session.expires_at = expires_at;
+            return Some(session);
         }
-        if self.no_encrypt {
-            if let Ok(Some(mut session)) = config::load_session() {
-                session.access_token = access_token;
-                session.refresh_token = refresh_token;
-                session.expires_at = expires_at;
-                return Some(session);
-            }
+        if self.no_encrypt
+            && let Ok(Some(mut session)) = config::load_session()
+        {
+            session.access_token = access_token;
+            session.refresh_token = refresh_token;
+            session.expires_at = expires_at;
+            return Some(session);
         }
         None
     }
@@ -489,7 +489,6 @@ impl App {
         if matches!(self.screen, Screen::SafetyNumber) {
             // Any key exits safety number back to settings.
             self.screen = Screen::Settings;
-            return;
         }
     }
 
@@ -706,11 +705,8 @@ impl App {
                             // TODO: replace with real identity keys from Orchestrator
                             let our_key = [0u8; 32];
                             let their_key = [1u8; 32];
-                            self.safety_number = Some(SafetyNumberScreen::new(
-                                contact_name,
-                                &our_key,
-                                &their_key,
-                            ));
+                            self.safety_number =
+                                Some(SafetyNumberScreen::new(contact_name, &our_key, &their_key));
                             self.screen = Screen::SafetyNumber;
                         }
                         SettingsAction::ExportKeys => {
@@ -723,7 +719,6 @@ impl App {
             // Shortcut keys
             KeyCode::Char('l') | KeyCode::Char('L') => self.do_logout(),
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                self.settings_screen.confirm().map(|_| ());
                 // Trigger ShowSafetyNumber directly
                 let contact_name = self
                     .chat_list
@@ -732,7 +727,8 @@ impl App {
                     .unwrap_or_else(|| "Unknown".into());
                 let our_key = [0u8; 32];
                 let their_key = [1u8; 32];
-                self.safety_number = Some(SafetyNumberScreen::new(contact_name, &our_key, &their_key));
+                self.safety_number =
+                    Some(SafetyNumberScreen::new(contact_name, &our_key, &their_key));
                 self.screen = Screen::SafetyNumber;
             }
             _ => {}
@@ -754,14 +750,16 @@ impl App {
                     if !query.is_empty() {
                         self.contact_search.searching = true;
                         // TODO: dispatch gRPC SearchUsers(query) → call set_results / set_error
-                        self.contact_search.set_error("Search not yet connected to gRPC");
+                        self.contact_search
+                            .set_error("Search not yet connected to gRPC");
                     }
                 } else {
                     // Results visible — Enter = search again
                     let query = self.contact_search.query.trim().to_string();
                     if !query.is_empty() {
                         self.contact_search.searching = true;
-                        self.contact_search.set_error("Search not yet connected to gRPC");
+                        self.contact_search
+                            .set_error("Search not yet connected to gRPC");
                     }
                 }
             }
@@ -771,7 +769,8 @@ impl App {
             KeyCode::Char('a') if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
                 if let Some(result) = self.contact_search.selected().cloned() {
                     // TODO: dispatch gRPC AddContact(result.user_id)
-                    self.status = format!("Add contact '{}' — not yet implemented", result.username);
+                    self.status =
+                        format!("Add contact '{}' — not yet implemented", result.username);
                     self.contact_search.reset();
                     self.screen = Screen::Main;
                 }

@@ -33,10 +33,11 @@ pub struct Session {
 /// App-level config.
 /// Stored in `~/.config/construct-tui/config.json`.
 /// Transport layer selection — controls how gRPC traffic reaches the server.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "mode")]
 pub enum TransportConfig {
     /// Direct TLS — default for uncensored networks.
+    #[default]
     Direct,
     /// obfs4 obfuscation via construct-ice bridge line.
     /// Traffic looks like random noise to DPI systems.
@@ -56,12 +57,6 @@ pub enum TransportConfig {
         sni_host: String,
         real_host: String,
     },
-}
-
-impl Default for TransportConfig {
-    fn default() -> Self {
-        Self::Direct
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
