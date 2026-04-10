@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     bridge::{BridgeEvent, TokenRefreshMsg},
-    config::{self, Session, SessionState},
+    config::{self, Session, SessionState, TransportConfig},
     event::{Event, EventHandler, is_quit},
     screens::onboarding::OnboardingField,
     screens::{ChatListPane, ChatViewPane, DeviceLinkScreen, OnboardingScreen, UnlockMode, UnlockScreen},
@@ -51,11 +51,24 @@ enum Focus {
 #[derive(Debug)]
 enum AuthMsg {
     /// Authentication succeeded.
-    /// `pending_save` is Some when a new session was created (register/link) or when an
-    /// encrypted session was restored (updated tokens) — the App handles persisting it.
-    /// `None` for plaintext restores (handled inside `try_restore_session`).
     Success { user_id: String, pending_save: Option<Session> },
     Failure(String),
+}
+
+/// Unified internal event type — all background tasks funnel through this.
+enum InternalEvent {
+    Auth(AuthMsg),
+    TokenRefresh(TokenRefreshMsg),
+    Bridge(BridgeEvent),
+}
+
+/// Configuration derived from config file + CLI overrides.
+/// Passed to `App::new()` at startup.
+pub struct AppConfig {
+    pub server_url: String,
+    pub transport: TransportConfig,
+    pub no_encrypt: bool,
+    pub headless: bool,
 }
 
 pub struct App {
@@ -74,26 +87,22 @@ pub struct App {
     chat_view: ChatViewPane,
     status: String,
     running: bool,
-    auth_rx: Option<mpsc::Receiver<AuthMsg>>,
-    token_refresh_rx: Option<mpsc::Receiver<TokenRefreshMsg>>,
-    bridge_rx: Option<mpsc::Receiver<BridgeEvent>>,
+    /// All background tasks send events through this unified channel.
+    internal_tx: mpsc::UnboundedSender<InternalEvent>,
+    internal_rx: mpsc::UnboundedReceiver<InternalEvent>,
     server_url: String,
+    transport: TransportConfig,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(cfg: AppConfig) -> Self {
         let chat_list = ChatListPane::new();
         let initial_name = chat_list
             .selected_contact()
             .map(|c| c.display_name.clone())
             .unwrap_or_default();
 
-        let server_url = config::load_config()
-            .map(|c| c.server)
-            .unwrap_or_else(|_| "https://ams.konstruct.cc:443".into());
-
-        // Respect CONSTRUCT_NO_ENCRYPT env var for headless/systemd deployments.
-        let no_encrypt = std::env::var("CONSTRUCT_NO_ENCRYPT").is_ok();
+        let (internal_tx, internal_rx) = mpsc::unbounded_channel();
 
         Self {
             screen: Screen::Startup,
@@ -102,16 +111,16 @@ impl App {
             unlock_screen: UnlockScreen::new(UnlockMode::Unlock),
             session_passphrase: None,
             pending_session: None,
-            no_encrypt,
+            no_encrypt: cfg.no_encrypt,
             focus: Focus::ContactList,
             chat_list,
             chat_view: ChatViewPane::new(initial_name),
             status: "Ready".into(),
             running: true,
-            auth_rx: None,
-            token_refresh_rx: None,
-            bridge_rx: None,
-            server_url,
+            internal_tx,
+            internal_rx,
+            server_url: cfg.server_url,
+            transport: cfg.transport,
         }
     }
 
@@ -121,15 +130,13 @@ impl App {
 
         let mut events = EventHandler::new();
         while self.running {
-            self.poll_auth();
-            self.poll_token_refresh();
-            self.poll_bridge_events();
-
             terminal.draw(|frame| self.render(frame))?;
 
+            // Block until either a keyboard event or an internal async event arrives.
+            // No 100ms sleep — zero CPU when idle.
             tokio::select! {
                 Some(event) = events.next() => self.handle_event(event),
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
+                Some(internal) = self.internal_rx.recv() => self.handle_internal(internal),
             }
         }
         Ok(())
@@ -154,8 +161,7 @@ impl App {
 
     /// Restore a plaintext session from disk (legacy / `--no-encrypt` path).
     fn start_auth_restore_from_disk(&mut self) {
-        let (tx, rx) = mpsc::channel(1);
-        self.auth_rx = Some(rx);
+        let tx = self.internal_tx.clone();
         let url = self.server_url.clone();
         tokio::spawn(async move {
             let msg = match crate::auth::try_restore_session(&url).await {
@@ -163,29 +169,27 @@ impl App {
                 Ok(None) => AuthMsg::Failure("no_session".into()),
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
-            let _ = tx.send(msg).await;
+            let _ = tx.send(InternalEvent::Auth(msg));
         });
         self.screen = Screen::Connecting("Restoring session…".into());
     }
 
     /// Authenticate using a session already decrypted in memory (after Unlock screen).
     fn start_auth_restore_preloaded(&mut self, session: Session) {
-        let (tx, rx) = mpsc::channel(1);
-        self.auth_rx = Some(rx);
+        let tx = self.internal_tx.clone();
         let url = self.server_url.clone();
         tokio::spawn(async move {
             let msg = match crate::auth::authenticate_saved_session(session, &url).await {
                 Ok(r) => AuthMsg::Success { user_id: r.user_id, pending_save: r.session },
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
-            let _ = tx.send(msg).await;
+            let _ = tx.send(InternalEvent::Auth(msg));
         });
         self.screen = Screen::Connecting("Authenticating…".into());
     }
 
     fn start_auth_register(&mut self, username: String) {
-        let (tx, rx) = mpsc::channel(1);
-        self.auth_rx = Some(rx);
+        let tx = self.internal_tx.clone();
         let url = self.server_url.clone();
         let name = if username.is_empty() { None } else { Some(username) };
         tokio::spawn(async move {
@@ -193,34 +197,39 @@ impl App {
                 Ok(r) => AuthMsg::Success { user_id: r.user_id, pending_save: r.session },
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
-            let _ = tx.send(msg).await;
+            let _ = tx.send(InternalEvent::Auth(msg));
         });
         self.screen = Screen::Connecting("Solving proof-of-work, registering device…".into());
     }
 
     fn start_auth_link(&mut self, token: String) {
-        let (tx, rx) = mpsc::channel(1);
-        self.auth_rx = Some(rx);
+        let tx = self.internal_tx.clone();
         let url = self.server_url.clone();
         tokio::spawn(async move {
             let msg = match crate::auth::link_existing_device(&url, &token).await {
                 Ok(r) => AuthMsg::Success { user_id: r.user_id, pending_save: r.session },
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
-            let _ = tx.send(msg).await;
+            let _ = tx.send(InternalEvent::Auth(msg));
         });
         self.screen = Screen::Connecting("Confirming device link…".into());
     }
 
-    fn poll_auth(&mut self) {
-        let Some(rx) = self.auth_rx.as_mut() else { return };
-        match rx.try_recv() {
-            Ok(AuthMsg::Success { user_id, pending_save }) => {
-                self.auth_rx = None;
+    /// Handle a message arriving from a background task via the unified internal channel.
+    fn handle_internal(&mut self, event: InternalEvent) {
+        match event {
+            InternalEvent::Auth(msg) => self.handle_auth_msg(msg),
+            InternalEvent::TokenRefresh(msg) => self.handle_token_refresh_msg(msg),
+            InternalEvent::Bridge(evt) => self.handle_bridge_event(evt),
+        }
+    }
+
+    fn handle_auth_msg(&mut self, msg: AuthMsg) {
+        match msg {
+            AuthMsg::Success { user_id, pending_save } => {
                 self.status = format!("Connected as {}", user_id);
 
                 if let Some(session) = pending_save {
-                    // Start token refresh before deciding where to navigate.
                     self.start_token_refresh(&session);
 
                     if let Some(ref passphrase) = self.session_passphrase {
@@ -243,16 +252,13 @@ impl App {
                         self.screen = Screen::SetPassphrase;
                     }
                 } else {
-                    // Plaintext restore — session already persisted by try_restore_session.
                     self.screen = Screen::Main;
                 }
             }
-            Ok(AuthMsg::Failure(msg)) if msg == "no_session" => {
-                self.auth_rx = None;
+            AuthMsg::Failure(msg) if msg == "no_session" => {
                 self.screen = Screen::Onboarding;
             }
-            Ok(AuthMsg::Failure(msg)) => {
-                self.auth_rx = None;
+            AuthMsg::Failure(msg) => {
                 let is_startup_restore = matches!(self.screen, Screen::Connecting(_))
                     && self.onboarding.username.is_empty();
                 if is_startup_restore {
@@ -261,70 +267,55 @@ impl App {
                     self.screen = Screen::AuthError(msg);
                 }
             }
-            Err(mpsc::error::TryRecvError::Empty) => {}
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.auth_rx = None;
-            }
         }
     }
 
     fn start_token_refresh(&mut self, session: &Session) {
-        let rx = crate::bridge::spawn_token_refresh(
+        let tx = self.internal_tx.clone();
+        let mut rx = crate::bridge::spawn_token_refresh(
             self.server_url.clone(),
             session.device_id.clone(),
             session.refresh_token.clone(),
             session.expires_at,
         );
-        self.token_refresh_rx = Some(rx);
+        // Forward the single result from the token refresh task into the unified channel.
+        tokio::spawn(async move {
+            if let Some(msg) = rx.recv().await {
+                let _ = tx.send(InternalEvent::TokenRefresh(msg));
+            }
+        });
     }
 
-    fn poll_token_refresh(&mut self) {
-        let Some(rx) = self.token_refresh_rx.as_mut() else { return };
-        match rx.try_recv() {
-            Ok(TokenRefreshMsg::Refreshed { access_token, refresh_token, expires_at }) => {
-                self.token_refresh_rx = None;
-
-                // Re-save the session with updated tokens.
+    fn handle_token_refresh_msg(&mut self, msg: TokenRefreshMsg) {
+        match msg {
+            TokenRefreshMsg::Refreshed { access_token, refresh_token, expires_at } => {
                 let updated = self.build_updated_session(access_token, refresh_token, expires_at);
                 if let Some(session) = updated {
                     self.persist_session_background(session);
                 }
             }
-            Ok(TokenRefreshMsg::Failed(e)) => {
-                self.token_refresh_rx = None;
+            TokenRefreshMsg::Failed(e) => {
                 self.status = format!("Token refresh failed: {e}");
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {}
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.token_refresh_rx = None;
             }
         }
     }
 
-    fn poll_bridge_events(&mut self) {
-        let Some(rx) = self.bridge_rx.as_mut() else { return };
-        loop {
-            match rx.try_recv() {
-                Ok(BridgeEvent::NewMessage { peer_id: _, message_id: _, text, timestamp_ms: _ }) => {
-                    use crate::screens::chat_view::{ChatMessage, MessageKind};
-                    self.chat_view.messages.push(ChatMessage {
-                        id: generate_message_id(),
-                        kind: MessageKind::Received,
-                        text,
-                        time: current_time_hhmm(),
-                    });
-                }
-                Ok(BridgeEvent::MessageDelivered { message_id: _ }) => {
-                    // TODO: update delivery indicator in chat_view
-                }
-                Ok(BridgeEvent::Error(e)) => {
-                    self.status = format!("Bridge error: {e}");
-                }
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.bridge_rx = None;
-                    break;
-                }
+    fn handle_bridge_event(&mut self, evt: BridgeEvent) {
+        match evt {
+            BridgeEvent::NewMessage { peer_id: _, message_id: _, text, timestamp_ms: _ } => {
+                use crate::screens::chat_view::{ChatMessage, MessageKind};
+                self.chat_view.messages.push(ChatMessage {
+                    id: generate_message_id(),
+                    kind: MessageKind::Received,
+                    text,
+                    time: current_time_hhmm(),
+                });
+            }
+            BridgeEvent::MessageDelivered { message_id: _ } => {
+                // TODO: update delivery indicator
+            }
+            BridgeEvent::Error(e) => {
+                self.status = format!("Bridge error: {e}");
             }
         }
     }

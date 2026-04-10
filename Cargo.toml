@@ -3,15 +3,24 @@ name = "construct-tui"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# obfs4 DPI-bypass transport via construct-ice (optional — not needed on uncensored networks)
+ice = ["dep:construct-ice"]
+# Post-quantum (Kyber-768 PQXDH) — disable on RPi Zero / low-memory ARM
+post-quantum = ["construct-core/post-quantum"]
+
 [dependencies]
-construct-core = { path = "../construct-core", features = ["desktop", "post-quantum"] }
+construct-core = { path = "../construct-core", features = ["desktop"] }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tokio-stream = "0.1"
 async-stream = "0.3"
 anyhow = "1"
 futures = "0.3"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
 
 # gRPC / proto
 tonic = { version = "0.12", features = ["tls", "tls-native-roots"] }
@@ -37,6 +46,16 @@ ed25519-dalek = { version = "2.0", features = ["std", "rand_core"] }
 base64 = "0.22.1"
 uuid = { version = "1", features = ["v4"] }
 
+# Optional ICE (obfs4) DPI-bypass transport
+construct-ice = { path = "../construct-ice", optional = true, features = ["tonic-transport"] }
+
 [build-dependencies]
 tonic-build = "0.12"
+
+[profile.release]
+opt-level = "s"          # size over speed — fits RPi SD cards
+lto = true               # link-time optimisation (reduces binary size + improves perf)
+codegen-units = 1        # single CGU for best LTO
+strip = true             # strip symbols — saves ~2–4 MB
+panic = "abort"          # no unwinding machinery
 

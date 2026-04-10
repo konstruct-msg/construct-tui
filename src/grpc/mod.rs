@@ -1,3 +1,4 @@
+pub mod channel;
 pub mod client;
 
 /// Proto-generated types. Module hierarchy mirrors the proto package structure

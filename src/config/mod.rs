@@ -32,10 +32,44 @@ pub struct Session {
 
 /// App-level config.
 /// Stored in `~/.config/construct-tui/config.json`.
+/// Transport layer selection — controls how gRPC traffic reaches the server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "mode")]
+pub enum TransportConfig {
+    /// Direct TLS — default for uncensored networks.
+    Direct,
+    /// obfs4 obfuscation via construct-ice bridge line.
+    /// Traffic looks like random noise to DPI systems.
+    Obfs4 {
+        /// Full bridge line: `"cert=BASE64 iat-mode=0"` or full obfs4 addr string.
+        bridge_line: String,
+    },
+    /// obfs4 + outer TLS wrapper — SNI-based CDN fronting.
+    Obfs4Tls {
+        bridge_line: String,
+        /// SNI hostname presented in the outer TLS ClientHello.
+        tls_server_name: String,
+    },
+    /// Domain fronting through a CDN endpoint.
+    CdnFront {
+        cdn_endpoint: String,
+        sni_host: String,
+        real_host: String,
+    },
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self::Direct
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_server")]
     pub server: String,
+    #[serde(default)]
+    pub transport: TransportConfig,
 }
 
 /// Encrypted session blob stored on disk.
@@ -164,7 +198,7 @@ fn default_server() -> String {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { server: default_server() }
+        Self { server: default_server(), transport: TransportConfig::Direct }
     }
 }
 
