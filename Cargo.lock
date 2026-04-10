@@ -435,7 +435,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "construct-core"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -476,7 +476,9 @@ dependencies = [
 name = "construct-tui"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "argon2",
  "base64",
  "construct-core",
  "crossterm",
@@ -493,6 +495,8 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-build",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

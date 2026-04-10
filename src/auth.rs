@@ -28,6 +28,10 @@ pub struct AuthResult {
     pub user_id: String,
     pub device_id: String,
     pub access_token: String,
+    /// The full session for new registrations/links, or an updated session after
+    /// encrypted-session restore (contains refreshed tokens). `None` for plaintext restores
+    /// (those handle their own persistence in `try_restore_session`).
+    pub session: Option<crate::config::Session>,
 }
 
 /// Try to authenticate using a saved session.
@@ -57,6 +61,7 @@ pub async fn try_restore_session(server_url: &str) -> Result<Option<AuthResult>>
         user_id: updated.user_id,
         device_id: updated.device_id,
         access_token: resp.access_token,
+        session: None, // plaintext restore handles its own persistence above
     }))
 }
 
@@ -100,7 +105,7 @@ pub async fn register_new_device(
         .await
         .context("registering new device")?;
 
-    // 6. Persist session
+    // 6. Build session (caller is responsible for saving — encrypted or plaintext)
     let session = Session {
         signing_key_hex: hex::encode(*signing_pair.private_key),
         identity_key_hex: hex::encode(*identity_pair.private_key),
@@ -110,12 +115,12 @@ pub async fn register_new_device(
         refresh_token: resp.refresh_token.clone(),
         expires_at: resp.expires_at,
     };
-    save_session(&session)?;
 
     Ok(AuthResult {
         user_id: resp.user_id,
         device_id,
         access_token: resp.access_token,
+        session: Some(session),
     })
 }
 
@@ -155,7 +160,7 @@ pub async fn link_existing_device(server_url: &str, link_token: &str) -> Result<
         .await
         .context("confirm_device_link RPC failed")?;
 
-    // 3. Persist session
+    // 3. Build session (caller is responsible for saving — encrypted or plaintext)
     let session = Session {
         signing_key_hex: hex::encode(*signing_pair.private_key),
         identity_key_hex: hex::encode(*identity_pair.private_key),
@@ -165,11 +170,43 @@ pub async fn link_existing_device(server_url: &str, link_token: &str) -> Result<
         refresh_token: resp.refresh_token.clone(),
         expires_at: resp.expires_at,
     };
-    save_session(&session)?;
 
     Ok(AuthResult {
         user_id: resp.user_id,
         device_id,
         access_token: resp.access_token,
+        session: Some(session),
+    })
+}
+
+/// Authenticate using a session that was already loaded from disk (e.g. after decryption).
+/// Unlike `try_restore_session`, this does NOT touch the session file — the caller is
+/// responsible for re-saving the session with updated tokens.
+pub async fn authenticate_saved_session(
+    mut session: Session,
+    server_url: &str,
+) -> Result<AuthResult> {
+    let mut client = ConstructClient::connect(server_url)
+        .await
+        .context("connecting to server")?;
+
+    let resp = client
+        .authenticate(&session.device_id, &session.signing_key_hex)
+        .await
+        .context("re-authenticating session")?;
+
+    // Update tokens in-memory
+    session.access_token = resp.access_token.clone();
+    session.refresh_token = resp.refresh_token.clone();
+    session.expires_at = resp.expires_at;
+
+    let user_id = session.user_id.clone();
+    let device_id = session.device_id.clone();
+
+    Ok(AuthResult {
+        user_id,
+        device_id,
+        access_token: resp.access_token,
+        session: Some(session),
     })
 }
