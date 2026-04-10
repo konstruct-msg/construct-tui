@@ -28,6 +28,12 @@ pub struct Session {
     pub refresh_token: String,
     /// Token expiry (Unix seconds).
     pub expires_at: i64,
+    /// X25519 signed pre-key (hex, 32 bytes — private). Required by ClassicClient::from_keys().
+    #[serde(default)]
+    pub spk_key_hex: String,
+    /// Ed25519 signature over the SPK public key (hex, 64 bytes). Required by ClassicClient::from_keys().
+    #[serde(default)]
+    pub spk_sig_hex: String,
 }
 
 /// App-level config.

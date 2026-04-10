@@ -54,11 +54,13 @@ pub async fn try_restore_session(server_url: &str) -> Result<Option<AuthResult>>
     updated.expires_at = resp.expires_at;
     save_session(&updated)?;
 
+    let user_id = updated.user_id.clone();
+    let device_id = updated.device_id.clone();
     Ok(Some(AuthResult {
-        user_id: updated.user_id,
-        device_id: updated.device_id,
+        user_id,
+        device_id,
         access_token: resp.access_token,
-        session: None, // plaintext restore handles its own persistence above
+        session: Some(updated), // always return session so App can start the Orchestrator
     }))
 }
 
@@ -108,6 +110,8 @@ pub async fn register_new_device(server_url: &str, username: Option<&str>) -> Re
         access_token: resp.access_token.clone(),
         refresh_token: resp.refresh_token.clone(),
         expires_at: resp.expires_at,
+        spk_key_hex: hex::encode(*spk_pair.private_key),
+        spk_sig_hex: hex::encode(spk_sig.to_bytes()),
     };
 
     Ok(AuthResult {
@@ -163,6 +167,8 @@ pub async fn link_existing_device(server_url: &str, link_token: &str) -> Result<
         access_token: resp.access_token.clone(),
         refresh_token: resp.refresh_token.clone(),
         expires_at: resp.expires_at,
+        spk_key_hex: hex::encode(*spk_pair.private_key),
+        spk_sig_hex: hex::encode(spk_sig.to_bytes()),
     };
 
     Ok(AuthResult {

@@ -230,6 +230,17 @@ impl Storage {
         Ok(())
     }
 
+    /// Returns `true` if the given message_id has a pending ACK entry.
+    /// Used by the Orchestrator's `CheckAckInDb` action for deduplication.
+    pub fn has_ack(&self, message_id: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM pending_acks WHERE message_id = ?1",
+            params![message_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     // ── Secure key-value store ────────────────────────────────────────────────
 
     pub fn secure_save(&self, key: &str, value: &[u8]) -> Result<()> {

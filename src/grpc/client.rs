@@ -201,3 +201,126 @@ impl ConstructClient {
         Ok(result)
     }
 }
+
+/// Authenticated client for key and user service operations.
+/// Requires a valid JWT access token (set via `with_token()`).
+pub struct KeyUserClient {
+    channel: Channel,
+    access_token: String,
+}
+
+impl KeyUserClient {
+    pub async fn connect(server_url: &str, access_token: &str) -> Result<Self> {
+        let tls = ClientTlsConfig::new().with_native_roots();
+        let channel = Endpoint::from_shared(server_url.to_string())
+            .context("invalid server URL")?
+            .tls_config(tls)?
+            .connect()
+            .await
+            .context("gRPC connect failed")?;
+        Ok(Self {
+            channel,
+            access_token: access_token.to_string(),
+        })
+    }
+
+    fn bearer<T>(&self, msg: T) -> Request<T> {
+        let mut req = Request::new(msg);
+        req.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {}", self.access_token)
+                .parse()
+                .expect("valid token chars"),
+        );
+        req
+    }
+
+    /// Fetch the pre-key bundle for `user_id` and serialize it to the
+    /// JSON format expected by `Orchestrator::init_session_with_bundle`.
+    pub async fn get_pre_key_bundle_json(&mut self, user_id: &str) -> Result<String> {
+        use crate::grpc::services::{
+            GetPreKeyBundleRequest, key_service_client::KeyServiceClient,
+        };
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+
+        let mut key_svc = KeyServiceClient::new(self.channel.clone());
+        let resp = key_svc
+            .get_pre_key_bundle(self.bearer(GetPreKeyBundleRequest {
+                user_id: user_id.to_string(),
+                device_id: None,
+                preferred_suite: None,
+            }))
+            .await
+            .context("GetPreKeyBundle RPC failed")?
+            .into_inner();
+
+        let b = resp.bundle.context("no bundle in response")?;
+
+        // Serialize to the JSON format expected by Orchestrator::init_session_with_bundle
+        let bundle_json = serde_json::json!({
+            "identity_public": b.identity_key.to_vec(),
+            "signed_prekey_public": b.signed_pre_key.to_vec(),
+            "signature": b.signed_pre_key_signature.to_vec(),
+            "verifying_key": resp.verifying_key.to_vec(),
+            "suite_id": 1u16,
+            "one_time_prekey_public": b.one_time_pre_key.map(|k| k.to_vec()),
+            "one_time_prekey_id": b.one_time_pre_key_id,
+            "spk_uploaded_at": b.spk_uploaded_at as u64,
+            "spk_rotation_epoch": b.spk_rotation_epoch,
+        });
+
+        Ok(bundle_json.to_string())
+    }
+
+    /// Upload a batch of one-time pre-keys for this device.
+    pub async fn upload_pre_keys(
+        &mut self,
+        device_id: &str,
+        keys: Vec<(u32, Vec<u8>)>,
+    ) -> Result<()> {
+        use crate::grpc::services::{
+            OneTimePreKey, UploadPreKeysRequest, key_service_client::KeyServiceClient,
+        };
+        let pre_keys = keys
+            .into_iter()
+            .map(|(key_id, public_key)| OneTimePreKey {
+                key_id,
+                public_key: public_key.into(),
+            })
+            .collect();
+
+        let mut key_svc = KeyServiceClient::new(self.channel.clone());
+        key_svc
+            .upload_pre_keys(self.bearer(UploadPreKeysRequest {
+                device_id: device_id.to_string(),
+                pre_keys,
+                signed_pre_key: None,
+                replace_existing: false,
+                kyber_pre_keys: vec![],
+                kyber_signed_pre_key: None,
+            }))
+            .await
+            .context("UploadPreKeys RPC failed")?;
+        Ok(())
+    }
+
+    /// Find a user by their username and return the user_id.
+    pub async fn find_user(&mut self, username: &str) -> Result<Option<String>> {
+        use crate::grpc::services::{
+            FindUserRequest, user_service_client::UserServiceClient,
+        };
+        use tonic::Code;
+
+        let mut user_svc = UserServiceClient::new(self.channel.clone());
+        match user_svc
+            .find_user(self.bearer(FindUserRequest {
+                username: username.to_string(),
+            }))
+            .await
+        {
+            Ok(resp) => Ok(Some(resp.into_inner().user_id)),
+            Err(status) if status.code() == Code::NotFound => Ok(None),
+            Err(e) => Err(e).context("FindUser RPC failed"),
+        }
+    }
+}

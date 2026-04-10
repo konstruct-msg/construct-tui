@@ -63,17 +63,25 @@ enum AuthMsg {
     /// Authentication succeeded.
     Success {
         user_id: String,
-        pending_save: Option<Session>,
+        device_id: String,
+        access_token: String,
+        /// Full session including private keys — used to construct the Orchestrator.
+        full_session: config::Session,
+        /// When `Some`, this session must be persisted to disk (new/updated).
+        pending_save: Option<config::Session>,
     },
     Failure(String),
 }
 
 /// Unified internal event type — all background tasks funnel through this.
-enum InternalEvent {
+pub(crate) enum InternalEvent {
     Auth(AuthMsg),
     TokenRefresh(TokenRefreshMsg),
     Bridge(BridgeEvent),
 }
+
+/// Type alias referenced by `orchestrator_task` to send bridge events back to the UI.
+pub(crate) type InternalEventProxy = InternalEvent;
 
 /// Configuration derived from config file + CLI overrides.
 /// Passed to `App::new()` at startup.
@@ -116,6 +124,14 @@ pub struct App {
     contact_search: ContactSearchScreen,
     /// Safety number widget for the currently selected contact.
     safety_number: Option<SafetyNumberScreen>,
+    /// Handle to the E2EE Orchestrator task (set after successful auth).
+    orch_handle: Option<crate::orchestrator_task::OrchestratorHandle>,
+    /// Command channel to the gRPC stream worker.
+    stream_tx: Option<mpsc::Sender<crate::streaming::StreamCmd>>,
+    /// Device ID of the authenticated device (set after successful auth).
+    device_id: String,
+    /// Bearer token for gRPC calls (set after successful auth, refreshed on token refresh).
+    access_token: String,
 }
 
 impl App {
@@ -159,6 +175,10 @@ impl App {
             settings_screen,
             contact_search: ContactSearchScreen::new(),
             safety_number: None,
+            orch_handle: None,
+            stream_tx: None,
+            device_id: String::new(),
+            access_token: String::new(),
         }
     }
 
@@ -203,10 +223,16 @@ impl App {
         let url = self.server_url.clone();
         tokio::spawn(async move {
             let msg = match crate::auth::try_restore_session(&url).await {
-                Ok(Some(r)) => AuthMsg::Success {
-                    user_id: r.user_id,
-                    pending_save: None,
-                },
+                Ok(Some(r)) => {
+                    let full = r.session.expect("try_restore_session always returns session");
+                    AuthMsg::Success {
+                        user_id: r.user_id,
+                        device_id: r.device_id,
+                        access_token: r.access_token,
+                        full_session: full.clone(),
+                        pending_save: None, // already saved inside try_restore_session
+                    }
+                }
                 Ok(None) => AuthMsg::Failure("no_session".into()),
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
@@ -221,10 +247,16 @@ impl App {
         let url = self.server_url.clone();
         tokio::spawn(async move {
             let msg = match crate::auth::authenticate_saved_session(session, &url).await {
-                Ok(r) => AuthMsg::Success {
-                    user_id: r.user_id,
-                    pending_save: r.session,
-                },
+                Ok(r) => {
+                    let full = r.session.clone().expect("authenticate_saved_session always returns session");
+                    AuthMsg::Success {
+                        user_id: r.user_id,
+                        device_id: r.device_id,
+                        access_token: r.access_token,
+                        full_session: full.clone(),
+                        pending_save: r.session,
+                    }
+                }
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
             let _ = tx.send(InternalEvent::Auth(msg));
@@ -242,10 +274,16 @@ impl App {
         };
         tokio::spawn(async move {
             let msg = match crate::auth::register_new_device(&url, name.as_deref()).await {
-                Ok(r) => AuthMsg::Success {
-                    user_id: r.user_id,
-                    pending_save: r.session,
-                },
+                Ok(r) => {
+                    let full = r.session.clone().expect("register_new_device always returns session");
+                    AuthMsg::Success {
+                        user_id: r.user_id,
+                        device_id: r.device_id,
+                        access_token: r.access_token,
+                        full_session: full.clone(),
+                        pending_save: r.session,
+                    }
+                }
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
             let _ = tx.send(InternalEvent::Auth(msg));
@@ -258,10 +296,16 @@ impl App {
         let url = self.server_url.clone();
         tokio::spawn(async move {
             let msg = match crate::auth::link_existing_device(&url, &token).await {
-                Ok(r) => AuthMsg::Success {
-                    user_id: r.user_id,
-                    pending_save: r.session,
-                },
+                Ok(r) => {
+                    let full = r.session.clone().expect("link_existing_device always returns session");
+                    AuthMsg::Success {
+                        user_id: r.user_id,
+                        device_id: r.device_id,
+                        access_token: r.access_token,
+                        full_session: full.clone(),
+                        pending_save: r.session,
+                    }
+                }
                 Err(e) => AuthMsg::Failure(e.to_string()),
             };
             let _ = tx.send(InternalEvent::Auth(msg));
@@ -282,25 +326,31 @@ impl App {
         match msg {
             AuthMsg::Success {
                 user_id,
+                device_id,
+                access_token,
+                full_session,
                 pending_save,
             } => {
                 self.status = format!("Connected as {}", user_id);
                 self.user_id = user_id.clone();
+                self.device_id = device_id.clone();
+                self.access_token = access_token.clone();
                 self.connection = ConnectionState::Connected {
                     transport: transport_label(&self.transport).into(),
                     latency_ms: None,
                 };
+                self.settings_screen.update(
+                    &self.server_url,
+                    transport_label(&self.transport),
+                    &device_id,
+                    &user_id,
+                    self.pq_active,
+                );
+
+                // Start the E2EE Orchestrator in the background.
+                self.start_orchestrator(full_session.clone(), user_id.clone(), device_id.clone(), access_token.clone());
 
                 if let Some(session) = pending_save {
-                    // Update settings with real device ID now that we have it.
-                    self.settings_screen.update(
-                        &self.server_url,
-                        transport_label(&self.transport),
-                        &session.device_id,
-                        &user_id,
-                        self.pq_active,
-                    );
-
                     self.start_token_refresh(&session);
 
                     if let Some(ref passphrase) = self.session_passphrase {
@@ -319,13 +369,6 @@ impl App {
                         self.screen = Screen::SetPassphrase;
                     }
                 } else {
-                    self.settings_screen.update(
-                        &self.server_url,
-                        transport_label(&self.transport),
-                        "—",
-                        &user_id,
-                        self.pq_active,
-                    );
                     self.screen = Screen::Main;
                 }
             }
@@ -342,6 +385,143 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Construct the Orchestrator, spawn the gRPC stream worker, and wire everything together.
+    fn start_orchestrator(
+        &mut self,
+        session: config::Session,
+        user_id: String,
+        device_id: String,
+        access_token: String,
+    ) {
+        use construct_core::{
+            crypto::{client_api::ClassicClient, suites::classic::ClassicSuiteProvider},
+            orchestration::orchestrator::Orchestrator,
+        };
+        use crate::orchestrator_task::spawn_orchestrator_task;
+        use crate::streaming::{spawn_stream_worker, StreamCmd, StreamEvent};
+        use crate::storage::Storage;
+
+        // Decode private keys from hex.
+        let identity_secret = match hex::decode(&session.identity_key_hex) {
+            Ok(v) => v,
+            Err(e) => { self.status = format!("Orchestrator key decode error: {e}"); return; }
+        };
+        let signing_secret = match hex::decode(&session.signing_key_hex) {
+            Ok(v) => v,
+            Err(e) => { self.status = format!("Orchestrator key decode error: {e}"); return; }
+        };
+        let spk_secret = match hex::decode(&session.spk_key_hex) {
+            Ok(v) => v,
+            Err(e) => { self.status = format!("Orchestrator key decode error: {e}"); return; }
+        };
+        let spk_sig = match hex::decode(&session.spk_sig_hex) {
+            Ok(v) => v,
+            Err(e) => { self.status = format!("Orchestrator key decode error: {e}"); return; }
+        };
+
+        // Construct the ClassicClient.
+        let client = match ClassicClient::<ClassicSuiteProvider>::from_keys(
+            identity_secret,
+            signing_secret,
+            spk_secret,
+            spk_sig,
+        ) {
+            Ok(c) => c,
+            Err(e) => { self.status = format!("Orchestrator init error: {e}"); return; }
+        };
+
+        let orchestrator = Orchestrator::new(client, user_id.clone());
+
+        let storage = match Storage::open() {
+            Ok(s) => s,
+            Err(e) => { self.status = format!("Storage open error: {e}"); return; }
+        };
+
+        // Spawn the gRPC stream worker.
+        let (stream_tx, mut stream_rx) = spawn_stream_worker(
+            self.server_url.clone(),
+            access_token.clone(),
+            vec![],
+        );
+        self.stream_tx = Some(stream_tx.clone());
+
+        // Spawn the Orchestrator actor task.
+        let orch_handle = spawn_orchestrator_task(
+            orchestrator,
+            storage,
+            stream_tx,
+            self.internal_tx.clone(),
+            self.server_url.clone(),
+            access_token,
+            user_id,
+            device_id,
+        );
+
+        // Fire AppLaunched to trigger session GC / prewarm sweep.
+        orch_handle.send(construct_core::orchestration::actions::IncomingEvent::AppLaunched);
+        self.orch_handle = Some(orch_handle.clone());
+
+        // Relay stream events to the Orchestrator.
+        let orch_tx = orch_handle.tx.clone();
+        let internal_tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = stream_rx.recv().await {
+                match event {
+                    StreamEvent::Message(envelope) => {
+                        // Unpack the wire payload to extract header fields.
+                        if let Ok(decoded) = construct_core::wire_payload::unpack(&envelope.encrypted_payload) {
+                            let from = envelope.sender
+                                .as_ref()
+                                .map(|s| s.user_id.clone())
+                                .unwrap_or_default();
+                            let message_id = match &envelope.message_id_type {
+                                Some(crate::grpc::core_types::envelope::MessageIdType::MessageId(id)) => id.clone(),
+                                _ => String::new(),
+                            };
+                            let content_type = envelope.content_type as u8;
+                            let is_control = matches!(
+                                content_type,
+                                21 | 24 // SESSION_RESET | SESSION_RESET_INIT
+                            );
+                            let _ = orch_tx.send(
+                                construct_core::orchestration::actions::IncomingEvent::MessageReceived {
+                                    message_id,
+                                    from,
+                                    data: envelope.encrypted_payload.clone(),
+                                    msg_num: decoded.message_number,
+                                    kem_ct: decoded.kem_ciphertext.unwrap_or_default(),
+                                    otpk_id: decoded.one_time_prekey_id,
+                                    is_control,
+                                    content_type,
+                                },
+                            );
+                        }
+                    }
+                    StreamEvent::Ack(id) => {
+                        let _ = orch_tx.send(
+                            construct_core::orchestration::actions::IncomingEvent::AckReceived {
+                                message_id: id,
+                            },
+                        );
+                    }
+                    StreamEvent::Connected => {
+                        let _ = internal_tx.send(InternalEvent::Bridge(
+                            crate::bridge::BridgeEvent::Error("Stream connected".into()),
+                        ));
+                        let _ = orch_tx.send(
+                            construct_core::orchestration::actions::IncomingEvent::NetworkReconnected,
+                        );
+                    }
+                    StreamEvent::Disconnected => {
+                        let _ = internal_tx.send(InternalEvent::Bridge(
+                            crate::bridge::BridgeEvent::Error("Stream disconnected".into()),
+                        ));
+                    }
+                }
+            }
+        });
     }
 
     fn start_token_refresh(&mut self, session: &Session) {
@@ -663,13 +843,27 @@ impl App {
                     let text = self.chat_view.take_compose();
                     if !text.trim().is_empty() {
                         use crate::screens::chat_view::{ChatMessage, MessageKind};
+                        let message_id = generate_message_id();
+
+                        // Send via E2EE Orchestrator if wired up.
+                        if let Some(ref orch) = self.orch_handle {
+                            if let Some(contact) = self.chat_list.selected_contact() {
+                                orch.send(construct_core::orchestration::actions::IncomingEvent::OutgoingMessage {
+                                    contact_id: contact.id.clone(),
+                                    message_id: message_id.clone(),
+                                    plaintext_utf8: text.clone(),
+                                    content_type: 0,
+                                });
+                            }
+                        }
+
                         self.chat_view.messages.push(ChatMessage {
-                            id: generate_message_id(),
+                            id: message_id,
                             kind: MessageKind::Sent,
                             text,
                             time: current_time_hhmm(),
                         });
-                        self.status = "Message queued".into();
+                        self.status = "Message sent".into();
                     }
                 }
                 KeyCode::Backspace => self.chat_view.pop_char(),
@@ -787,9 +981,16 @@ impl App {
             self.status = format!("Logout error: {e}");
             return;
         }
+        // Drop the orchestrator and stream worker (stops background tasks).
+        self.orch_handle = None;
+        if let Some(ref tx) = self.stream_tx.take() {
+            let _ = tx.try_send(crate::streaming::StreamCmd::Shutdown);
+        }
         self.session_passphrase = None;
         self.pending_session = None;
         self.user_id = String::new();
+        self.device_id = String::new();
+        self.access_token = String::new();
         self.connection = ConnectionState::Disconnected;
         self.contact_search.reset();
         self.chat_list = ChatListPane::new();

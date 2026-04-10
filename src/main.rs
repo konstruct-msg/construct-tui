@@ -4,6 +4,7 @@ mod bridge;
 mod config;
 mod event;
 mod grpc;
+mod orchestrator_task;
 mod screens;
 mod storage;
 mod streaming;
