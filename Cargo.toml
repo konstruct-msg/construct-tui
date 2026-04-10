@@ -9,6 +9,7 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+async-stream = "0.3"
 anyhow = "1"
 futures = "0.3"
 
@@ -25,6 +26,9 @@ dirs = "5"
 argon2 = { version = "0.5", features = ["std"] }
 aes-gcm = "0.10"
 zeroize = { version = "1", features = ["std"] }
+
+# Message storage
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 # Crypto helpers
 rand = "0.8"

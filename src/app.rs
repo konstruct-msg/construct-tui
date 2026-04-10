@@ -12,6 +12,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
+    bridge::{BridgeEvent, TokenRefreshMsg},
     config::{self, Session, SessionState},
     event::{Event, EventHandler, is_quit},
     screens::onboarding::OnboardingField,
@@ -74,6 +75,8 @@ pub struct App {
     status: String,
     running: bool,
     auth_rx: Option<mpsc::Receiver<AuthMsg>>,
+    token_refresh_rx: Option<mpsc::Receiver<TokenRefreshMsg>>,
+    bridge_rx: Option<mpsc::Receiver<BridgeEvent>>,
     server_url: String,
 }
 
@@ -106,6 +109,8 @@ impl App {
             status: "Ready".into(),
             running: true,
             auth_rx: None,
+            token_refresh_rx: None,
+            bridge_rx: None,
             server_url,
         }
     }
@@ -116,12 +121,12 @@ impl App {
 
         let mut events = EventHandler::new();
         while self.running {
-            // Poll for auth task completion
             self.poll_auth();
+            self.poll_token_refresh();
+            self.poll_bridge_events();
 
             terminal.draw(|frame| self.render(frame))?;
 
-            // Short timeout so we can repaint while auth is running
             tokio::select! {
                 Some(event) = events.next() => self.handle_event(event),
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
@@ -215,8 +220,10 @@ impl App {
                 self.status = format!("Connected as {}", user_id);
 
                 if let Some(session) = pending_save {
+                    // Start token refresh before deciding where to navigate.
+                    self.start_token_refresh(&session);
+
                     if let Some(ref passphrase) = self.session_passphrase {
-                        // Encrypted session restore — re-save with updated tokens.
                         match config::save_session_encrypted(&session, passphrase) {
                             Ok(()) => self.screen = Screen::Main,
                             Err(e) => {
@@ -224,7 +231,6 @@ impl App {
                             }
                         }
                     } else if self.no_encrypt {
-                        // Headless / --no-encrypt: save plaintext.
                         match config::save_session(&session) {
                             Ok(()) => self.screen = Screen::Main,
                             Err(e) => {
@@ -232,7 +238,6 @@ impl App {
                             }
                         }
                     } else {
-                        // New session — ask the user to set a passphrase.
                         self.pending_session = Some(session);
                         self.unlock_screen.reset_for_mode(UnlockMode::SetNew);
                         self.screen = Screen::SetPassphrase;
@@ -260,6 +265,106 @@ impl App {
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 self.auth_rx = None;
             }
+        }
+    }
+
+    fn start_token_refresh(&mut self, session: &Session) {
+        let rx = crate::bridge::spawn_token_refresh(
+            self.server_url.clone(),
+            session.device_id.clone(),
+            session.refresh_token.clone(),
+            session.expires_at,
+        );
+        self.token_refresh_rx = Some(rx);
+    }
+
+    fn poll_token_refresh(&mut self) {
+        let Some(rx) = self.token_refresh_rx.as_mut() else { return };
+        match rx.try_recv() {
+            Ok(TokenRefreshMsg::Refreshed { access_token, refresh_token, expires_at }) => {
+                self.token_refresh_rx = None;
+
+                // Re-save the session with updated tokens.
+                let updated = self.build_updated_session(access_token, refresh_token, expires_at);
+                if let Some(session) = updated {
+                    self.persist_session_background(session);
+                }
+            }
+            Ok(TokenRefreshMsg::Failed(e)) => {
+                self.token_refresh_rx = None;
+                self.status = format!("Token refresh failed: {e}");
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.token_refresh_rx = None;
+            }
+        }
+    }
+
+    fn poll_bridge_events(&mut self) {
+        let Some(rx) = self.bridge_rx.as_mut() else { return };
+        loop {
+            match rx.try_recv() {
+                Ok(BridgeEvent::NewMessage { peer_id: _, message_id: _, text, timestamp_ms: _ }) => {
+                    use crate::screens::chat_view::{ChatMessage, MessageKind};
+                    self.chat_view.messages.push(ChatMessage {
+                        id: generate_message_id(),
+                        kind: MessageKind::Received,
+                        text,
+                        time: current_time_hhmm(),
+                    });
+                }
+                Ok(BridgeEvent::MessageDelivered { message_id: _ }) => {
+                    // TODO: update delivery indicator in chat_view
+                }
+                Ok(BridgeEvent::Error(e)) => {
+                    self.status = format!("Bridge error: {e}");
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.bridge_rx = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Build an updated Session from refreshed tokens (if we have a current session in memory).
+    /// Returns None if we cannot reconstruct the session (e.g. no saved passphrase to re-load).
+    fn build_updated_session(
+        &self,
+        access_token: String,
+        refresh_token: String,
+        expires_at: i64,
+    ) -> Option<Session> {
+        // Try to load the current session from disk and patch the tokens.
+        if let Some(ref passphrase) = self.session_passphrase {
+            if let Ok(Some(mut session)) = config::load_session_encrypted(passphrase) {
+                session.access_token = access_token;
+                session.refresh_token = refresh_token;
+                session.expires_at = expires_at;
+                return Some(session);
+            }
+        }
+        if self.no_encrypt {
+            if let Ok(Some(mut session)) = config::load_session() {
+                session.access_token = access_token;
+                session.refresh_token = refresh_token;
+                session.expires_at = expires_at;
+                return Some(session);
+            }
+        }
+        None
+    }
+
+    fn persist_session_background(&mut self, session: Session) {
+        // Restart token refresh with new expiry.
+        self.start_token_refresh(&session);
+
+        if let Some(ref passphrase) = self.session_passphrase {
+            let _ = config::save_session_encrypted(&session, passphrase);
+        } else if self.no_encrypt {
+            let _ = config::save_session(&session);
         }
     }
 

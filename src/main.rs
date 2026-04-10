@@ -1,9 +1,12 @@
 mod app;
 mod auth;
+mod bridge;
 mod config;
 mod event;
 mod grpc;
 mod screens;
+mod storage;
+mod streaming;
 mod tui;
 
 use anyhow::Result;
