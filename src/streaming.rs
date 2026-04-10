@@ -245,7 +245,9 @@ async fn handle_server_message(resp: MessageStreamResponse, event_tx: &mpsc::Sen
     };
     match response {
         Response::Message(envelope) => {
-            let _ = event_tx.send(StreamEvent::Message(Box::new(envelope))).await;
+            let _ = event_tx
+                .send(StreamEvent::Message(Box::new(envelope)))
+                .await;
         }
         Response::Ack(ack) => {
             let _ = event_tx.send(StreamEvent::Ack(ack.message_id)).await;
