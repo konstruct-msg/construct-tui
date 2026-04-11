@@ -71,6 +71,12 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // rustls 0.23+ requires explicit CryptoProvider installation.
+    // Install ring as the process-level provider before any TLS is used.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls ring crypto provider");
+
     let cli = Cli::parse();
 
     // Handle the `logout` subcommand before touching the TUI.
