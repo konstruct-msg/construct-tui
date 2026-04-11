@@ -15,7 +15,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 /// Compute the safety number for a pair of identity keys.
@@ -78,7 +78,6 @@ impl Widget for &SafetyNumberScreen {
         let outer = Block::default()
             .title(format!(" ◆ Safety Number — {} ", self.contact_name))
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Yellow));
 
         let inner = outer.inner(area);

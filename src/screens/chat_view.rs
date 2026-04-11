@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,7 +117,6 @@ impl Widget for &mut ChatViewPane {
         let outer = Block::default()
             .title(format!(" {} ", self.contact_name))
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
             .border_style(border_style);
 
         let inner = outer.inner(area);
@@ -198,7 +197,6 @@ impl Widget for &mut ChatViewPane {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
                     .border_style(compose_border_style)
                     .title(" Message "),
             )

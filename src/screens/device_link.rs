@@ -9,7 +9,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 const TITLE: &str = " Link existing account ";
@@ -88,7 +88,6 @@ impl Widget for &DeviceLinkScreen {
                 Block::default()
                     .title(" Link Token ")
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Cyan)),
             )
             .style(Style::default().fg(Color::White))

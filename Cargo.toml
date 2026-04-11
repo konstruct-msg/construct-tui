@@ -1,6 +1,6 @@
 [package]
 name = "construct-tui"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [[bin]]
@@ -40,6 +40,9 @@ zeroize = { version = "1", features = ["std"] }
 
 # Message storage — SQLCipher
 rusqlite = { version = "0.31", features = ["bundled-sqlcipher"] }
+
+# TLS/encryption backend for rustls
+ring = "0.17"
 
 # Key derivation domain separation
 hkdf = "0.12"

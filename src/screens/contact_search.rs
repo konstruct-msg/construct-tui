@@ -8,9 +8,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
-    },
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
 };
 
 #[derive(Debug, Clone)]
@@ -107,7 +105,6 @@ impl Widget for &mut ContactSearchScreen {
         let outer = Block::default()
             .title(" ◆ Add Node ")
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Cyan));
 
         let inner = outer.inner(area);
@@ -140,7 +137,6 @@ impl Widget for &mut ContactSearchScreen {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Cyan))
                     .title(" Search "),
             )

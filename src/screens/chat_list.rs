@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget, Widget},
+    widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget},
 };
 
 #[derive(Debug, Clone)]
@@ -121,7 +121,6 @@ impl StatefulWidget for &mut ChatListPane {
                 Block::default()
                     .title(" Contacts ")
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
                     .border_style(border_style),
             )
             .highlight_style(

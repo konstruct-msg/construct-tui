@@ -5,9 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
-    },
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
 };
 
 /// An action the user triggered from the settings screen.
@@ -170,7 +168,6 @@ impl Widget for &mut SettingsScreen {
         let outer = Block::default()
             .title(" ◆ Settings ")
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Cyan));
 
         let inner = outer.inner(area);
