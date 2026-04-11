@@ -257,7 +257,7 @@ impl App {
                     }))
                 }
                 Ok(None) => AuthMsg::Failure("no_session".into()),
-                Err(e) => AuthMsg::Failure(e.to_string()),
+                Err(e) => AuthMsg::Failure(format!("{e:#}")),
             };
             let _ = tx.send(InternalEvent::Auth(msg));
         });
@@ -283,7 +283,7 @@ impl App {
                         pending_save: r.session,
                     }))
                 }
-                Err(e) => AuthMsg::Failure(e.to_string()),
+                Err(e) => AuthMsg::Failure(format!("{e:#}")),
             };
             let _ = tx.send(InternalEvent::Auth(msg));
         });
@@ -313,7 +313,7 @@ impl App {
                         pending_save: r.session,
                     }))
                 }
-                Err(e) => AuthMsg::Failure(e.to_string()),
+                Err(e) => AuthMsg::Failure(format!("{e:#}")),
             };
             let _ = tx.send(InternalEvent::Auth(msg));
         });
@@ -338,7 +338,7 @@ impl App {
                         pending_save: r.session,
                     }))
                 }
-                Err(e) => AuthMsg::Failure(e.to_string()),
+                Err(e) => AuthMsg::Failure(format!("{e:#}")),
             };
             let _ = tx.send(InternalEvent::Auth(msg));
         });

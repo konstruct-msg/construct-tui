@@ -79,19 +79,22 @@ impl ConstructClient {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
 
-        let message = format!("KonstruktAuth-v1\n{}\n{}", device_id, timestamp);
+        let message = format!("{}{}", device_id, timestamp);
         let sk_bytes = hex::decode(signing_key_hex).context("invalid signing key hex")?;
         let sk_array: [u8; 32] = sk_bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("signing key must be 32 bytes"))?;
         let signing_key = SigningKey::from_bytes(&sk_array);
         let signature = signing_key.sign(message.as_bytes());
-        let signature_hex = hex::encode(signature.to_bytes());
+        let signature_b64 = {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            STANDARD.encode(signature.to_bytes())
+        };
 
         let req = AuthenticateDeviceRequest {
             device_id: device_id.to_string(),
             timestamp,
-            signature: signature_hex,
+            signature: signature_b64,
         };
 
         let resp = self
