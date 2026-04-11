@@ -32,29 +32,9 @@ pub struct ChatViewPane {
 
 impl ChatViewPane {
     pub fn new(contact_name: impl Into<String>) -> Self {
-        let messages = vec![
-            ChatMessage {
-                id: "1".into(),
-                kind: MessageKind::Received,
-                text: "Привет!".into(),
-                time: "11:42".into(),
-            },
-            ChatMessage {
-                id: "2".into(),
-                kind: MessageKind::Received,
-                text: "Как дела?".into(),
-                time: "11:43".into(),
-            },
-            ChatMessage {
-                id: "3".into(),
-                kind: MessageKind::Sent,
-                text: "Отлично!".into(),
-                time: "11:44".into(),
-            },
-        ];
         Self {
             contact_name: contact_name.into(),
-            messages,
+            messages: Vec::new(),
             compose: String::new(),
             focused: false,
             compose_focused: false,
