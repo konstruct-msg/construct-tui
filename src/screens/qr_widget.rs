@@ -113,7 +113,7 @@ impl Widget for &QrWidget<'_> {
                     (true, true) => ('█', self.fg, self.bg),
                     (true, false) => ('▀', self.fg, self.bg),
                     (false, true) => ('▄', self.fg, self.bg),
-                    (false, false) => (' ', self.bg, self.fg),
+                    (false, false) => (' ', self.fg, self.bg),
                 };
                 spans.push(Span::styled(ch.to_string(), Style::default().fg(fg).bg(bg)));
             }
