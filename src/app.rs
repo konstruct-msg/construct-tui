@@ -819,13 +819,8 @@ impl App {
             }
             KeyCode::Enter => {
                 let username = self.onboarding.username.trim().to_string();
-                if username.is_empty() {
-                    self.onboarding.status = Some("Enter a username to continue".into());
-                    self.onboarding.is_error = true;
-                } else {
-                    self.onboarding.status = None;
-                    self.start_auth_register(username);
-                }
+                self.onboarding.status = None;
+                self.start_auth_register(username);
             }
             KeyCode::Backspace => {
                 self.onboarding.pop_char();

@@ -225,7 +225,7 @@ impl Widget for &mut SettingsScreen {
             )
             .highlight_symbol("▶ ");
 
-        let mut state = self.state.clone();
+        let mut state = self.state;
         StatefulWidget::render(list, chunks[1], buf, &mut state);
         self.state = state;
     }

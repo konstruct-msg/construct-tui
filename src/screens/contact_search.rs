@@ -187,7 +187,7 @@ impl Widget for &mut ContactSearchScreen {
             )
             .highlight_symbol("▶ ");
 
-        let mut state = self.state.clone();
+        let mut state = self.state;
         StatefulWidget::render(list, chunks[3], buf, &mut state);
         self.state = state;
     }

@@ -3,21 +3,20 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_dir = PathBuf::from("../construct-protos");
 
-    let protos = [
-        "services/auth_service.proto",
-        "services/messaging_service.proto",
-        "services/key_service.proto",
-        "services/user_service.proto",
+    let protos: Vec<PathBuf> = vec![
+        proto_dir.join("services/auth_service.proto"),
+        proto_dir.join("services/messaging_service.proto"),
+        proto_dir.join("services/key_service.proto"),
+        proto_dir.join("services/user_service.proto"),
     ];
 
-    let includes = [proto_dir.to_str().unwrap()];
+    let includes: Vec<PathBuf> = vec![proto_dir.clone()];
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(false)
-        // Suppress clippy/rustc warnings in generated protobuf code.
         .emit_rerun_if_changed(false)
         .type_attribute(".", "#[allow(clippy::large_enum_variant, clippy::enum_variant_names, clippy::doc_lazy_continuation, dead_code)]")
-        .compile_protos(&protos.map(|p| proto_dir.join(p)), &includes)?;
+        .compile_protos(&protos, &includes)?;
 
     // Re-run if any proto changes
     println!("cargo:rerun-if-changed=../construct-protos");

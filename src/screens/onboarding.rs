@@ -5,27 +5,6 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 
-/// Construct logo — half-block art, 16 rows × 40 cols.
-/// Generated from the brand asset using Unicode half-block compression (2 source rows → 1).
-const LOGO: &[&str] = &[
-    "████████████████████████████████████████",
-    "████████████████████████████████████████",
-    "████████████████████████████████████████",
-    "████████████▀▀▀▀████████████████████████",
-    "██████████▀      ▀██████████████████████",
-    "█████████          ▀████▀    ▀██████████",
-    "████████            ▀█▀        ▀████████",
-    "████████                         ███████",
-    "████████▄                         ██████",
-    "█████████▄                        ██████",
-    "███████████▄      ▄█▄           ▄███████",
-    "█████████████▄▄▄▄█████▄        ▄████████",
-    "████████████████████████▄    ▄██████████",
-    "████████████████████████████████████████",
-    "████████████████████████████████████████",
-    "████████████████████████████████████████",
-];
-
 const BANNER: &[&str] = &[
     r" ██████╗ ██████╗ ███╗   ██╗███████╗████████╗██████╗ ██╗   ██╗ ██████╗████████╗",
     r"██╔════╝██╔═══██╗████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║   ██║██╔════╝╚══██╔══╝",
@@ -80,30 +59,11 @@ impl OnboardingScreen {
 
 impl Widget for &OnboardingScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let logo_h = LOGO.len() as u16;
         let banner_h = BANNER.len() as u16;
-        // logo + gap + banner + gap + tagline + gap + field + gap + hint
-        let total_h = logo_h + 1 + banner_h + 1 + 1 + 2 + 3 + 1 + 1;
+        // banner + gap + tagline + gap + field + gap + hint
+        let total_h = banner_h + 1 + 1 + 2 + 3 + 1 + 1;
         let v_offset = area.height.saturating_sub(total_h) / 2;
         let mut y = area.y + v_offset;
-
-        // ── Logo ──────────────────────────────────────────────────────────────
-        let logo_w = LOGO[0].chars().count() as u16;
-        let logo_x = area.x + area.width.saturating_sub(logo_w) / 2;
-        for (i, row) in LOGO.iter().enumerate() {
-            Paragraph::new(*row)
-                .style(Style::default().fg(Color::Cyan))
-                .render(
-                    Rect {
-                        x: logo_x,
-                        y: y + i as u16,
-                        width: logo_w.min(area.width),
-                        height: 1,
-                    },
-                    buf,
-                );
-        }
-        y += logo_h + 1;
 
         // ── CONSTRUCT banner ──────────────────────────────────────────────────
         let banner_w = BANNER[0].len() as u16;
@@ -190,7 +150,7 @@ impl Widget for &OnboardingScreen {
         }
 
         // ── Hint ──────────────────────────────────────────────────────────────
-        let hint = "Enter=new account   Tab=link existing device   q=quit";
+        let hint = "Enter=register (username optional)   Tab=link existing device   q=quit";
         let hx = area.x + area.width.saturating_sub(hint.len() as u16) / 2;
         Paragraph::new(hint)
             .style(Style::default().fg(Color::DarkGray))

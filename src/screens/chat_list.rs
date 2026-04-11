@@ -138,7 +138,7 @@ impl StatefulWidget for &mut ChatListPane {
 
 impl Widget for &mut ChatListPane {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut state = self.state.clone();
+        let mut state = self.state;
         StatefulWidget::render(self, area, buf, &mut state);
     }
 }
