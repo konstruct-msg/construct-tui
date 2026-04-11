@@ -313,7 +313,11 @@ impl KeyUserClient {
         {
             Ok(resp) => Ok(Some(resp.into_inner().user_id)),
             Err(status) if status.code() == Code::NotFound => Ok(None),
-            Err(e) => Err(e).context("FindUser RPC failed"),
+            Err(status) => Err(anyhow::anyhow!(
+                "FindUser RPC failed: {} ({})",
+                status.message(),
+                status.code()
+            )),
         }
     }
 }

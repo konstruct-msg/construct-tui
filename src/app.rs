@@ -1177,14 +1177,16 @@ impl App {
                                     let _ = tx.send(InternalEvent::ContactSearchResult(vec![]));
                                 }
                                 Err(e) => {
+                                    tracing::error!(query = %q, error = ?e, "FindUser RPC failed");
                                     let _ = tx.send(InternalEvent::ContactSearchError(format!(
-                                        "Search error: {e}"
+                                        "Search error: {e:#}"
                                     )));
                                 }
                             },
                             Err(e) => {
+                                tracing::error!(url = %url, error = ?e, "Failed to connect for FindUser");
                                 let _ = tx.send(InternalEvent::ContactSearchError(format!(
-                                    "Connect error: {e}"
+                                    "Connect error: {e:#}"
                                 )));
                             }
                         }
