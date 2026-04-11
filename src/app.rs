@@ -178,6 +178,7 @@ impl App {
             "—",
             "—",
             cfg.pq_active,
+            "",
         );
 
         Self {
@@ -451,6 +452,7 @@ impl App {
                     &device_id,
                     &user_id,
                     self.pq_active,
+                    &full_session.signing_key_hex,
                 );
                 // Keep the decrypted session in memory for token-refresh re-saves.
                 self.current_session = Some(full_session.clone());
@@ -1349,6 +1351,7 @@ impl App {
             "—",
             "—",
             self.pq_active,
+            "",
         );
         self.onboarding = OnboardingScreen::new();
         self.screen = Screen::Onboarding;

@@ -1,5 +1,7 @@
 //! Settings screen — server/transport info, device identity, logout, safety number.
 
+use std::time::{Duration, Instant};
+
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -9,6 +11,7 @@ use ratatui::{
 };
 
 use super::qr_widget::QrWidget;
+use crate::invite::generate_invite_qr;
 
 /// An action the user triggered from the settings screen.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +43,11 @@ pub struct SettingsScreen {
     pub pq_active: bool,
     state: ListState,
     items: Vec<SettingsItem>,
+    /// Signing key for generating invite QR codes.
+    signing_key_hex: String,
+    /// Cached invite QR payload (Base64 JSON) and the time it was generated.
+    /// Regenerated automatically after 4 minutes (server TTL is 5 min).
+    invite_cache: Option<(String, Instant)>,
 }
 
 impl SettingsScreen {
@@ -49,11 +57,13 @@ impl SettingsScreen {
         device_id: impl Into<String>,
         user_id: impl Into<String>,
         pq_active: bool,
+        signing_key_hex: impl Into<String>,
     ) -> Self {
         let server = server.into();
         let transport_label = transport_label.into();
         let device_id = device_id.into();
         let user_id = user_id.into();
+        let signing_key_hex = signing_key_hex.into();
 
         let pq_str = if pq_active {
             "yes (Kyber-768)"
@@ -128,6 +138,8 @@ impl SettingsScreen {
             pq_active,
             state,
             items,
+            signing_key_hex,
+            invite_cache: None,
         }
     }
 
@@ -162,8 +174,40 @@ impl SettingsScreen {
         device_id: impl Into<String>,
         user_id: impl Into<String>,
         pq_active: bool,
+        signing_key_hex: impl Into<String>,
     ) {
-        *self = Self::new(server, transport_label, device_id, user_id, pq_active);
+        *self = Self::new(
+            server,
+            transport_label,
+            device_id,
+            user_id,
+            pq_active,
+            signing_key_hex,
+        );
+    }
+
+    /// Returns a valid invite QR payload, regenerating if the cached one is ≥4 min old.
+    fn invite_payload(&mut self) -> Option<&str> {
+        const REFRESH_SECS: u64 = 240; // regenerate after 4 min (TTL is 5 min)
+
+        let needs_refresh = match &self.invite_cache {
+            None => true,
+            Some((_, ts)) => ts.elapsed() >= Duration::from_secs(REFRESH_SECS),
+        };
+
+        if needs_refresh && !self.signing_key_hex.is_empty() && !self.user_id.is_empty() {
+            match generate_invite_qr(
+                &self.user_id,
+                &self.device_id,
+                &self.server,
+                &self.signing_key_hex,
+            ) {
+                Ok(payload) => self.invite_cache = Some((payload, Instant::now())),
+                Err(e) => tracing::warn!("invite generation failed: {e}"),
+            }
+        }
+
+        self.invite_cache.as_ref().map(|(p, _)| p.as_str())
     }
 }
 
@@ -245,7 +289,7 @@ impl SettingsScreen {
         self.state = state;
     }
 
-    fn render_identity_qr(&self, area: Rect, buf: &mut Buffer) {
+    fn render_identity_qr(&mut self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(" My Identity ")
             .borders(Borders::ALL)
@@ -253,10 +297,19 @@ impl SettingsScreen {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Encode user handle so contacts can add by scanning
-        let qr_data = format!("construct:add:{}", self.user_id);
-        QrWidget::new(&qr_data)
-            .caption(&self.user_id)
-            .render(inner, buf);
+        match self.invite_payload() {
+            Some(payload) => {
+                // Clone to avoid borrow conflict (payload borrows self, QrWidget needs &str)
+                let payload = payload.to_owned();
+                QrWidget::new(&payload)
+                    .caption(&self.user_id)
+                    .render(inner, buf);
+            }
+            None => {
+                Paragraph::new("Generating invite…")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .render(inner, buf);
+            }
+        }
     }
 }

@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "construct-tui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -676,6 +676,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "x25519-dalek",
  "zeroize",
 ]
 
