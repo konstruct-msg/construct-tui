@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/construct-tui/main/scripts
 Downloads the latest release for your platform (macOS arm64/x86_64, Linux x86_64/aarch64)
 and installs `konstrukt` to `/usr/local/bin`.
 
-**Manual download** from [Releases](https://github.com/YOUR_ORG/construct-tui/releases/latest):
+**Manual download** from [Releases](https://github.com/maximeliseyev/construct-tui/releases/latest):
 
 | Platform | File |
 |----------|------|
