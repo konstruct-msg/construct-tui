@@ -435,11 +435,21 @@ impl App {
                 self.screen = Screen::Onboarding;
             }
             AuthMsg::Failure(msg) => {
-                let is_startup_restore = matches!(self.screen, Screen::Connecting(_))
+                // Auto-restore on startup (plaintext path): session_key is None because
+                // no passphrase has been entered yet.  Show Onboarding so the user can
+                // re-register — they likely just logged out or the session file is stale.
+                //
+                // Unlock path (user entered passphrase): session_key is Some because we
+                // already decrypted the session.  The failure is a server/network error,
+                // NOT a "no session" case.  Show AuthError so the user sees what went wrong
+                // instead of silently landing on the onboarding screen.
+                let is_auto_restore = matches!(self.screen, Screen::Connecting(_))
+                    && self.session_key.is_none()
                     && self.onboarding.username.is_empty();
-                if is_startup_restore {
+                if is_auto_restore {
                     self.screen = Screen::Onboarding;
                 } else {
+                    tracing::error!(error = %msg, "Authentication failed");
                     self.screen = Screen::AuthError(msg);
                 }
             }
@@ -770,7 +780,15 @@ impl App {
             return;
         }
         if matches!(self.screen, Screen::AuthError(_)) {
-            self.screen = Screen::Onboarding;
+            // If a session key is present the user came from the Unlock screen —
+            // go back there so they can retry (or choose to start fresh via Esc).
+            // Otherwise it was a startup-auto-restore or registration error: Onboarding.
+            if self.session_key.is_some() {
+                self.unlock_screen.reset_for_mode(UnlockMode::Unlock);
+                self.screen = Screen::Unlock;
+            } else {
+                self.screen = Screen::Onboarding;
+            }
             return;
         }
         if matches!(self.screen, Screen::Unlock) {
