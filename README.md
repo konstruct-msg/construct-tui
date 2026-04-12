@@ -1,6 +1,6 @@
 # construct-tui
 
-Terminal UI client for [Construct Messenger](https://construct.cc) — E2EE messenger with a terminal/ASCII aesthetic.
+Terminal UI client for [Construct Messenger](https://konstruct.cc) — E2EE messenger with a terminal/ASCII aesthetic.
 
 Built with Rust + [Ratatui](https://ratatui.rs). Runs anywhere: Linux, macOS, Raspberry Pi.
 
@@ -205,7 +205,7 @@ Stored at `~/.config/construct-tui/config.json`. Created automatically on first 
 
 ```json
 {
-  "server": "https://construct.cc",
+  "server": "https://ams.konstruct.cc",
   "transport": {
     "mode": "Direct"
   }
@@ -322,7 +322,7 @@ The binary is at `target/release/construct-tui` (or `target/release-pq/construct
 ./construct-tui
 
 # Override server
-./construct-tui --server https://ams.construct.cc:443
+./construct-tui --server https://ams.konstruct.cc:443
 
 # Enable obfs4 DPI-bypass (requires --features ice build)
 ./construct-tui --bridge "cert=BASE64... iat-mode=0"
@@ -402,7 +402,7 @@ Stored at `~/.config/construct-tui/config.json`. Created automatically on first 
 
 ```json
 {
-  "server": "https://construct.cc",
+  "server": "https://konstruct.cc",
   "transport": {
     "mode": "Direct"
   }
