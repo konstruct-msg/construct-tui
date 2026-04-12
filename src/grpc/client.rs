@@ -69,7 +69,7 @@ impl ConstructClient {
     }
 
     /// Authenticate an existing device.
-    /// Signs "KonstruktAuth-v1\n{device_id}\n{timestamp}" with Ed25519.
+    /// Signs "{device_id}{timestamp}" with Ed25519 (must match server format).
     pub async fn authenticate(
         &mut self,
         device_id: &str,
