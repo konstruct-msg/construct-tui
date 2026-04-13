@@ -85,5 +85,8 @@ pub fn generate_invite_qr(
     };
 
     let json = serde_json::to_string(&invite).context("failed to serialize invite")?;
-    Ok(BASE64.encode(json.as_bytes()))
+    let encoded = BASE64.encode(json.as_bytes());
+    // Wrap in the deep-link URL expected by the iOS scanner:
+    // konstruct://add?invite=<base64>
+    Ok(format!("konstruct://add?invite={encoded}"))
 }
