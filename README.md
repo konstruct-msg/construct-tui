@@ -6,13 +6,13 @@ Built with Rust + [Ratatui](https://ratatui.rs). Runs anywhere: Linux, macOS, Ra
 
 ```
 ┌─ CONSTRUCT ─────────────────────────────────────────────────────────────────┐
-│ > CONTACTS                 │ [alice]  15:42                                  │
-│   alice           15:42    │ hey, got the new build running                  │
-│   bob             14:11    │                                                 │
-│   carol           11:03    │ [you]  15:43                                    │
-│                            │ works on the Pi Zero too now                    │
-│                            │                                                 │
-│                            │ ▌                                               │
+│ > CONTACTS                 │ [alice]  15:42                                 │
+│   alice           15:42    │ hey, got the new build running                 │
+│   bob             14:11    │                                                │
+│   carol           11:03    │ [you]  15:43                                   │
+│                            │ works on the Pi Zero too now                   │
+│                            │                                                │
+│                            │ ▌                                              │
 └────────────────────────────┴────────────────────────────────────────────────┘
 ```
 
@@ -125,7 +125,7 @@ The binary is named `konstrukt` and is placed at `target/release/konstrukt`
 konstrukt
 
 # Override server
-konstrukt --server https://ams.construct.cc:443
+konstrukt --server https://ams.konstruct.cc:443
 
 # Enable obfs4 DPI-bypass (requires --features ice build)
 konstrukt --bridge "cert=BASE64... iat-mode=0"
