@@ -303,7 +303,14 @@ impl KeyUserClient {
                 kyber_signed_pre_key: None,
             }))
             .await
-            .context("UploadPreKeys RPC failed")?;
+            .map_err(|s| {
+                anyhow::anyhow!(
+                    "UploadPreKeys failed: {} {} ({})",
+                    s.code() as i32,
+                    s.code(),
+                    s.message()
+                )
+            })?;
         Ok(())
     }
 

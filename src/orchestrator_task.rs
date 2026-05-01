@@ -283,11 +283,11 @@ async fn dispatch(
 
         // ── Session healing ─────────────────────────────────────────────────
         Action::SessionHealNeeded { contact_id, role } => {
-            tracing::info!(
+            tracing::warn!(
                 target: "orchestrator_task",
                 contact_id = %contact_id,
                 role = %role,
-                "Session heal needed — attempting recovery"
+                "Session heal needed — will overwrite current session"
             );
 
             if role == "Initiator" {
