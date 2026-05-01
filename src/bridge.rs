@@ -32,6 +32,8 @@ pub enum BridgeEvent {
     },
     /// A message we sent was acknowledged by the server.
     MessageDelivered { message_id: String },
+    /// Stream connection status changed (connected / disconnected).
+    StreamStatus { connected: bool },
     /// A platform-level error worth surfacing.
     Error(String),
 }

@@ -735,7 +735,7 @@ impl App {
                     }
                     StreamEvent::Connected => {
                         let _ = internal_tx.send(InternalEvent::Bridge(
-                            crate::bridge::BridgeEvent::Error("Stream connected".into()),
+                            crate::bridge::BridgeEvent::StreamStatus { connected: true },
                         ));
                         let _ = orch_tx.send(
                             construct_core::orchestration::actions::IncomingEvent::NetworkReconnected,
@@ -743,7 +743,7 @@ impl App {
                     }
                     StreamEvent::Disconnected => {
                         let _ = internal_tx.send(InternalEvent::Bridge(
-                            crate::bridge::BridgeEvent::Error("Stream disconnected".into()),
+                            crate::bridge::BridgeEvent::StreamStatus { connected: false },
                         ));
                     }
                 }
@@ -836,6 +836,13 @@ impl App {
             }
             BridgeEvent::MessageDelivered { message_id: _ } => {
                 // TODO: update delivery indicator
+            }
+            BridgeEvent::StreamStatus { connected } => {
+                self.status = if connected {
+                    "● connected".into()
+                } else {
+                    "○ disconnected".into()
+                };
             }
             BridgeEvent::Error(e) => {
                 self.status = format!("Bridge error: {e}");
