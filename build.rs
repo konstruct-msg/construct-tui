@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_dir.join("services/messaging_service.proto"),
         proto_dir.join("services/key_service.proto"),
         proto_dir.join("services/user_service.proto"),
+        proto_dir.join("messaging/content.proto"),
     ];
 
     let includes: Vec<PathBuf> = vec![proto_dir.clone()];

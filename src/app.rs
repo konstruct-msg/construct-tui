@@ -672,7 +672,7 @@ impl App {
             let uid = user_id.clone();
             let did = device_id.clone();
             tokio::spawn(async move {
-                match crate::grpc::client::KeyUserClient::connect(&url, &token, &uid).await {
+                match crate::grpc::client::KeyUserClient::connect(&url, &token, &uid, &did).await {
                     Ok(mut client) => {
                         if let Err(e) = client.upload_pre_keys(&did, otpks).await {
                             tracing::warn!("OTPK upload failed: {e}");
@@ -1316,10 +1316,12 @@ impl App {
                     let url = self.server_url.clone();
                     let token = self.access_token.clone();
                     let uid = self.user_id.clone();
+                    let did = self.device_id.clone();
                     let tx = self.internal_tx.clone();
                     let q = query.clone();
                     tokio::spawn(async move {
-                        match crate::grpc::client::KeyUserClient::connect(&url, &token, &uid).await
+                        match crate::grpc::client::KeyUserClient::connect(&url, &token, &uid, &did)
+                            .await
                         {
                             Ok(mut client) => match client.find_user(&q).await {
                                 Ok(Some(user_id)) => {

@@ -24,6 +24,7 @@ use construct_core::orchestration::{
     actions::{Action, IncomingEvent},
     orchestrator::Orchestrator,
 };
+use prost::Message as _;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
@@ -109,6 +110,10 @@ async fn run(
 
         // Collect any inline follow-up events (from synchronous Action handlers).
         let mut follow_ups: Vec<IncomingEvent> = Vec::new();
+        // Track contacts that completed session init in this dispatch cycle so
+        // we can skip a spurious SessionHealNeeded for the same contact.
+        let mut session_inited: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for action in actions {
             dispatch(
@@ -124,6 +129,7 @@ async fn run(
                 &self_tx,
                 &mut timers,
                 &mut follow_ups,
+                &mut session_inited,
             )
             .await;
         }
@@ -146,6 +152,7 @@ async fn run(
                     &self_tx,
                     &mut timers,
                     &mut Vec::new(), // no further follow-up nesting
+                    &mut std::collections::HashSet::new(),
                 )
                 .await;
             }
@@ -169,6 +176,7 @@ async fn dispatch(
     self_tx: &mpsc::UnboundedSender<IncomingEvent>,
     timers: &mut HashMap<String, AbortHandle>,
     follow_ups: &mut Vec<IncomingEvent>,
+    session_inited: &mut std::collections::HashSet<String>,
 ) {
     match action {
         // ── Crypto (platform must handle synchronously) ────────────────────
@@ -194,6 +202,7 @@ async fn dispatch(
                                 contact_id = %contact_id,
                                 "InitSession (Responder): session established from wire payload"
                             );
+                            session_inited.insert(contact_id.clone());
                         }
                         Err(e) => {
                             tracing::error!(
@@ -232,6 +241,7 @@ async fn dispatch(
                         None,
                     );
                 }
+                session_inited.insert(contact_id.clone());
             }
             follow_ups.push(IncomingEvent::SessionInitCompleted {
                 contact_id,
@@ -251,7 +261,7 @@ async fn dispatch(
             message_id,
             plaintext,
         } => {
-            let text = String::from_utf8_lossy(&plaintext).into_owned();
+            let text = decode_plaintext_text(&plaintext);
             // Persist to storage.
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -283,6 +293,17 @@ async fn dispatch(
 
         // ── Session healing ─────────────────────────────────────────────────
         Action::SessionHealNeeded { contact_id, role } => {
+            // Dedup: if InitSession already succeeded for this contact in the
+            // same dispatch cycle, the heal is stale — skip it.
+            if session_inited.contains(&contact_id) {
+                tracing::debug!(
+                    target: "orchestrator_task",
+                    contact_id = %contact_id,
+                    role = %role,
+                    "SessionHealNeeded suppressed — InitSession already succeeded this cycle"
+                );
+                return;
+            }
             tracing::warn!(
                 target: "orchestrator_task",
                 contact_id = %contact_id,
@@ -307,7 +328,15 @@ async fn dispatch(
                 let _ = stream_tx.try_send(StreamCmd::Send(Box::new(end_sess)));
 
                 // Re-fetch bundle and re-init INITIATOR session.
-                match fetch_bundle_json(grpc_url, access_token, my_user_id, &contact_id).await {
+                match fetch_bundle_json(
+                    grpc_url,
+                    access_token,
+                    my_user_id,
+                    my_device_id,
+                    &contact_id,
+                )
+                .await
+                {
                     Ok(bundle_json) => {
                         if let Ok(bundle) =
                             serde_json::from_str::<X3DHPublicKeyBundle>(&bundle_json)
@@ -353,8 +382,14 @@ async fn dispatch(
                         "Heal (Responder): no queued wire payload — cannot heal"
                     ),
                     Some(wire) => {
-                        match fetch_bundle_json(grpc_url, access_token, my_user_id, &contact_id)
-                            .await
+                        match fetch_bundle_json(
+                            grpc_url,
+                            access_token,
+                            my_user_id,
+                            my_device_id,
+                            &contact_id,
+                        )
+                        .await
                         {
                             Ok(bundle_json) => {
                                 match orchestrator.init_receiving_session_from_wire_payload(
@@ -461,9 +496,11 @@ async fn dispatch(
             let grpc_url = grpc_url.to_string();
             let access_token = access_token.to_string();
             let my_uid = my_user_id.to_string();
+            let my_did = my_device_id.to_string();
             let uid = user_id.clone();
             tokio::spawn(async move {
-                let bundle_json = fetch_bundle_json(&grpc_url, &access_token, &my_uid, &uid).await;
+                let bundle_json =
+                    fetch_bundle_json(&grpc_url, &access_token, &my_uid, &my_did, &uid).await;
                 let _ = tx.send(IncomingEvent::KeyBundleFetched {
                     user_id: uid,
                     bundle_json: bundle_json.unwrap_or_default(),
@@ -589,10 +626,12 @@ async fn fetch_bundle_json(
     grpc_url: &str,
     access_token: &str,
     my_user_id: &str,
+    my_device_id: &str,
     user_id: &str,
 ) -> Result<String> {
     let mut client =
-        crate::grpc::KeyUserClient::connect(grpc_url, access_token, my_user_id).await?;
+        crate::grpc::KeyUserClient::connect(grpc_url, access_token, my_user_id, my_device_id)
+            .await?;
     client.get_pre_key_bundle_json(user_id).await
 }
 
@@ -694,4 +733,55 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+/// KNST binary frame magic: "KNST" (0x4B 0x4E 0x53 0x54), version 0x01.
+/// Header layout (30 bytes total):
+///   [0..4]  magic
+///   [4]     version (0x01)
+///   [5]     flags   (0x00)
+///   [6..22] message UUID (16 bytes)
+///   [22..24] chunk_index (big-endian u16)
+///   [24..26] total_chunks (big-endian u16)
+///   [26..30] plaintext_length (big-endian u32)
+///   [30..]  payload bytes (protobuf MessageContent for regular messages)
+const KNST_MAGIC: &[u8] = b"KNST";
+const KNST_VERSION: u8 = 0x01;
+const KNST_HEADER_SIZE: usize = 30;
+
+/// Extract displayable text from a decrypted plaintext buffer.
+///
+/// iOS wraps every message in a KNST binary frame containing a protobuf
+/// `shared.proto.messaging.v1.MessageContent`. This function:
+///  1. Strips the 30-byte KNST header if present.
+///  2. Decodes the protobuf payload to extract `text_message.text`.
+///  3. Falls back to lossy UTF-8 if no KNST magic or proto decode fails.
+fn decode_plaintext_text(plaintext: &[u8]) -> String {
+    use crate::grpc::shared::proto::messaging::v1::MessageContent;
+
+    // ── Check for KNST frame ──────────────────────────────────────────────────
+    if plaintext.len() >= KNST_HEADER_SIZE
+        && plaintext.starts_with(KNST_MAGIC)
+        && plaintext[4] == KNST_VERSION
+    {
+        let payload = &plaintext[KNST_HEADER_SIZE..];
+
+        // Try protobuf decode first
+        if let Ok(content) = MessageContent::decode(payload) {
+            if let Some(
+                crate::grpc::shared::proto::messaging::v1::message_content::Content::Text(text_msg),
+            ) = content.content
+            {
+                return text_msg.text;
+            }
+            // Known content type but not a text message (media, reaction, etc.)
+            return String::new();
+        }
+
+        // Proto decode failed — treat payload as raw UTF-8 (legacy path)
+        return String::from_utf8_lossy(payload).into_owned();
+    }
+
+    // ── No KNST frame — raw UTF-8 (TUI↔TUI or control messages) ─────────────
+    String::from_utf8_lossy(plaintext).into_owned()
 }
