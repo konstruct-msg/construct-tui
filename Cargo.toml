@@ -8,6 +8,7 @@ name = "konstrukt"
 path = "src/main.rs"
 
 [features]
+default = ["ice", "post-quantum"]
 ice = ["construct-ice"]
 post-quantum = ["construct-core/post-quantum"]
 
