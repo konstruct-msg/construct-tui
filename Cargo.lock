@@ -575,7 +575,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "construct-core"
-version = "0.6.3"
+version = "0.8.4"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -585,6 +585,7 @@ dependencies = [
  "bytes",
  "chacha20poly1305",
  "crc32fast",
+ "curve25519-dalek",
  "ed25519-dalek",
  "getrandom 0.4.2",
  "hex",
@@ -614,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "construct-ice"
-version = "0.2.4"
+version = "2.3.1"
 dependencies = [
  "base64",
  "bytes",
@@ -866,6 +867,7 @@ dependencies = [
  "curve25519-dalek-derive",
  "digest 0.10.7",
  "fiat-crypto",
+ "rand_core 0.6.4",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -1689,9 +1691,9 @@ dependencies = [
 
 [[package]]
 name = "kem"
-version = "0.3.0-rc.6"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3ae2c3347ff4a7af4f679a9e397c2c7e6034a00b773dd2dd3c001d7f40897c9"
+checksum = "01737161ba802849cfd486b5bd209d38ba4943494c249a8126005170c7621edd"
 dependencies = [
  "crypto-common 0.2.1",
  "rand_core 0.10.0",
@@ -1864,9 +1866,9 @@ dependencies = [
 
 [[package]]
 name = "ml-kem"
-version = "0.3.0-rc.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8198b5db27ac9773534c371751a59dc18aec8b80aa141e69abfdd1dec2e3f78c"
+checksum = "68c77d5ff6d755d09a0ef4d4d28c2b7e83658fe83e8c736d55e93d43e380d1cd"
 dependencies = [
  "hybrid-array",
  "kem",
@@ -1877,9 +1879,9 @@ dependencies = [
 
 [[package]]
 name = "module-lattice"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cbdc2ac6ead7d0889a5d96e70b7f11a8812702a100ca7c65c5c71fdf076e182"
+checksum = "dc7c90d33a0dac244570c26461d761ffaeadb3bfc2b17cc625ae2185cafdffae"
 dependencies = [
  "ctutils",
  "hybrid-array",
@@ -2892,9 +2894,9 @@ dependencies = [
 
 [[package]]
 name = "sha3"
-version = "0.11.0-rc.9"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b233a7d59d7bfc027208506a33ffc9532b2acb24ddc61fe7e758dc2250db431"
+checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
 dependencies = [
  "digest 0.11.2",
  "keccak",

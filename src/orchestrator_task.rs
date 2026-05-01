@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use construct_core::crypto::handshake::x3dh::X3DHPublicKeyBundle;
 use construct_core::orchestration::{
     actions::{Action, IncomingEvent},
     orchestrator::Orchestrator,
@@ -210,12 +211,27 @@ async fn dispatch(
                         contact_id = %contact_id,
                         "InitSession (Responder): pending_count>0 but no wire payload — falling back to Initiator"
                     );
-                    let _ =
-                        orchestrator.init_session_with_bundle(&contact_id, bundle_json.as_bytes());
+                    if let Ok(bundle) = serde_json::from_str::<X3DHPublicKeyBundle>(&bundle_json) {
+                        let _ = orchestrator.init_session_with_bundle(
+                            &contact_id,
+                            bundle,
+                            None,
+                            None,
+                            None,
+                        );
+                    }
                 }
             } else {
                 // INITIATOR path — no pending messages, we are starting fresh.
-                let _ = orchestrator.init_session_with_bundle(&contact_id, bundle_json.as_bytes());
+                if let Ok(bundle) = serde_json::from_str::<X3DHPublicKeyBundle>(&bundle_json) {
+                    let _ = orchestrator.init_session_with_bundle(
+                        &contact_id,
+                        bundle,
+                        None,
+                        None,
+                        None,
+                    );
+                }
             }
             follow_ups.push(IncomingEvent::SessionInitCompleted {
                 contact_id,
@@ -233,8 +249,9 @@ async fn dispatch(
         Action::MessageDecrypted {
             contact_id,
             message_id,
-            plaintext_utf8,
+            plaintext,
         } => {
+            let text = String::from_utf8_lossy(&plaintext).into_owned();
             // Persist to storage.
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -243,7 +260,7 @@ async fn dispatch(
             let _ = storage.store_message(&crate::storage::StoredMessage {
                 id: message_id.clone(),
                 peer_id: contact_id.clone(),
-                text: plaintext_utf8.clone(),
+                text: text.clone(),
                 direction: "received".into(),
                 timestamp_ms: now_ms,
                 delivery_status: String::new(),
@@ -254,7 +271,7 @@ async fn dispatch(
                 BridgeEvent::NewMessage {
                     peer_id: contact_id,
                     message_id,
-                    text: plaintext_utf8,
+                    text,
                     timestamp_ms: now_ms,
                 },
             ));
@@ -292,8 +309,17 @@ async fn dispatch(
                 // Re-fetch bundle and re-init INITIATOR session.
                 match fetch_bundle_json(grpc_url, access_token, my_user_id, &contact_id).await {
                     Ok(bundle_json) => {
-                        let _ = orchestrator
-                            .init_session_with_bundle(&contact_id, bundle_json.as_bytes());
+                        if let Ok(bundle) =
+                            serde_json::from_str::<X3DHPublicKeyBundle>(&bundle_json)
+                        {
+                            let _ = orchestrator.init_session_with_bundle(
+                                &contact_id,
+                                bundle,
+                                None,
+                                None,
+                                None,
+                            );
+                        }
                         follow_ups.push(IncomingEvent::SessionInitCompleted {
                             contact_id: contact_id.clone(),
                             session_data: vec![],
@@ -303,7 +329,7 @@ async fn dispatch(
                         follow_ups.push(IncomingEvent::OutgoingMessage {
                             contact_id: contact_id.clone(),
                             message_id: uuid_v4(),
-                            plaintext_utf8: "\x00PING\x00".into(),
+                            plaintext: b"\x00PING\x00".to_vec(),
                             content_type: 0,
                         });
                     }
@@ -493,7 +519,7 @@ async fn dispatch(
             let _ = self_tx.send(IncomingEvent::OutgoingMessage {
                 contact_id,
                 message_id,
-                plaintext_utf8: "\x00HEARTBEAT\x00".into(),
+                plaintext: b"\x00HEARTBEAT\x00".to_vec(),
                 content_type: 0,
             });
         }
@@ -543,6 +569,14 @@ async fn dispatch(
             if let Some(handle) = timers.remove(&timer_id) {
                 handle.abort();
             }
+        }
+
+        Action::SessionTerminated { contact_id, .. } => {
+            tracing::info!(
+                target: "orchestrator_task",
+                contact_id = %contact_id,
+                "Session terminated (archive stored by orchestrator)"
+            );
         }
     }
 }

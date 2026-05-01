@@ -4,7 +4,7 @@
 //! On returning: load Session → AuthenticateDevice → update tokens.
 
 use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+
 use construct_core::{
     crypto::{
         SuiteID,
@@ -134,10 +134,10 @@ pub async fn register_new_device(
 
     // 4. Build DevicePublicKeys proto message
     let public_keys = DevicePublicKeys {
-        verifying_key: B64.encode(signing_pair.public_key),
-        identity_public: B64.encode(identity_pair.public_key),
-        signed_prekey_public: B64.encode(spk_pair.public_key),
-        signed_prekey_signature: B64.encode(spk_sig.to_bytes()),
+        verifying_key: signing_pair.public_key.to_vec(),
+        identity_public: identity_pair.public_key.to_vec(),
+        signed_prekey_public: spk_pair.public_key.to_vec(),
+        signed_prekey_signature: spk_sig.to_bytes().to_vec(),
         crypto_suite: "Curve25519+Ed25519".into(),
     };
 
@@ -199,10 +199,10 @@ pub async fn link_existing_device(server_url: &str, link_token: &str) -> Result<
     let spk_sig = sk.sign(&spk_msg);
 
     let public_keys = DevicePublicKeys {
-        verifying_key: B64.encode(signing_pair.public_key),
-        identity_public: B64.encode(identity_pair.public_key),
-        signed_prekey_public: B64.encode(spk_pair.public_key),
-        signed_prekey_signature: B64.encode(spk_sig.to_bytes()),
+        verifying_key: signing_pair.public_key.to_vec(),
+        identity_public: identity_pair.public_key.to_vec(),
+        signed_prekey_public: spk_pair.public_key.to_vec(),
+        signed_prekey_signature: spk_sig.to_bytes().to_vec(),
         crypto_suite: "Curve25519+Ed25519".into(),
     };
 

@@ -65,7 +65,7 @@ impl ConstructClient {
             .await
             .context("confirm_device_link RPC failed")?
             .into_inner();
-        Ok(resp)
+        Ok(resp.tokens.unwrap_or_default())
     }
 
     /// Authenticate an existing device.
@@ -86,15 +86,11 @@ impl ConstructClient {
             .map_err(|_| anyhow::anyhow!("signing key must be 32 bytes"))?;
         let signing_key = SigningKey::from_bytes(&sk_array);
         let signature = signing_key.sign(message.as_bytes());
-        let signature_b64 = {
-            use base64::{Engine as _, engine::general_purpose::STANDARD};
-            STANDARD.encode(signature.to_bytes())
-        };
 
         let req = AuthenticateDeviceRequest {
             device_id: device_id.to_string(),
             timestamp,
-            signature: signature_b64,
+            signature: signature.to_bytes().to_vec(),
         };
 
         let resp = self
@@ -104,7 +100,7 @@ impl ConstructClient {
             .context("authenticate_device RPC failed")?
             .into_inner();
 
-        Ok(resp)
+        Ok(resp.tokens.unwrap_or_default())
     }
 
     /// Register a brand-new device (PoW + public keys).
@@ -150,7 +146,7 @@ impl ConstructClient {
             .context("register_device RPC failed")?
             .into_inner();
 
-        Ok(resp)
+        Ok(resp.tokens.unwrap_or_default())
     }
 
     /// Flow B step 1: submit this device's keys so the phone can scan / approve.
@@ -161,12 +157,13 @@ impl ConstructClient {
         device_name: &str,
         platform: &str,
     ) -> Result<()> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
         let payload = JoinRequestPayload {
             pending_device_id: device_id.to_string(),
-            identity_public_b64: public_keys.identity_public.clone(),
-            verifying_key_b64: public_keys.verifying_key.clone(),
-            signed_prekey_public_b64: public_keys.signed_prekey_public.clone(),
-            signed_prekey_signature_b64: public_keys.signed_prekey_signature.clone(),
+            identity_public_b64: B64.encode(&public_keys.identity_public),
+            verifying_key_b64: B64.encode(&public_keys.verifying_key),
+            signed_prekey_public_b64: B64.encode(&public_keys.signed_prekey_public),
+            signed_prekey_signature_b64: B64.encode(&public_keys.signed_prekey_signature),
             device_name: device_name.to_string(),
             platform: platform.to_string(),
         };

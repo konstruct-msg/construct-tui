@@ -1172,7 +1172,7 @@ impl App {
                                 orch.send(construct_core::orchestration::actions::IncomingEvent::OutgoingMessage {
                                     contact_id: contact.id.clone(),
                                     message_id: message_id.clone(),
-                                    plaintext_utf8: text.clone(),
+                                    plaintext: text.as_bytes().to_vec(),
                                     content_type: 0,
                                 });
                             }
