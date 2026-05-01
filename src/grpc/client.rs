@@ -121,11 +121,25 @@ impl ConstructClient {
         // 2. Solve PoW — CPU-intensive, run on blocking thread pool
         let challenge = challenge_resp.challenge.clone();
         let difficulty = challenge_resp.difficulty;
+        tracing::info!(
+            target: "grpc::register",
+            difficulty,
+            challenge_prefix = %hex::encode(&challenge_resp.challenge[..4.min(challenge_resp.challenge.len())]),
+            "PoW challenge received — solving"
+        );
+        let started = std::time::Instant::now();
         let solution = tokio::task::spawn_blocking(move || {
             construct_core::pow::compute_pow(&challenge, difficulty)
         })
         .await
         .context("PoW task panicked")?;
+        tracing::info!(
+            target: "grpc::register",
+            difficulty,
+            nonce = solution.nonce,
+            elapsed_ms = started.elapsed().as_millis(),
+            "PoW solved"
+        );
 
         // 3. Submit registration
         let req = RegisterDeviceRequest {
