@@ -154,7 +154,7 @@ async fn run(
                     &my_device_id,
                     &self_tx,
                     &mut timers,
-                    &mut Vec::new(), // no further follow-up nesting
+                    &mut Vec::new(),     // no further follow-up nesting
                     &mut session_inited, // share dedup context with follow-ups
                 )
                 .await;
@@ -208,8 +208,9 @@ async fn dispatch(
                             // Consume the init message from the pending queue so that
                             // drain_pending does not try to re-decrypt it (msg_num=0 key
                             // was already consumed by init_receiving_session_from_wire_payload).
-                            let first_message_id = orchestrator.pop_first_pending(&contact_id)
-                                .unwrap_or_else(|| uuid_v4());
+                            let first_message_id = orchestrator
+                                .pop_first_pending(&contact_id)
+                                .unwrap_or_else(uuid_v4);
                             session_inited.insert(contact_id.clone());
 
                             // Surface the first message (msg_num=0) — the plaintext was
@@ -225,7 +226,8 @@ async fn dispatch(
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
-                                    .as_millis() as i64;
+                                    .as_millis()
+                                    as i64;
                                 tracing::info!(
                                     target: "orchestrator_task",
                                     contact_id = %contact_id,
@@ -460,8 +462,9 @@ async fn dispatch(
                                             "Heal (Responder): session established"
                                         );
                                         // Consume init message so drain_pending won't re-decrypt it.
-                                        let first_message_id = orchestrator.pop_first_pending(&contact_id)
-                                            .unwrap_or_else(|| uuid_v4());
+                                        let first_message_id = orchestrator
+                                            .pop_first_pending(&contact_id)
+                                            .unwrap_or_else(uuid_v4);
                                         // Surface the first message if it is real user content.
                                         let first_text = decode_plaintext_text(&first_plaintext);
                                         if !first_text.is_empty()
@@ -472,7 +475,8 @@ async fn dispatch(
                                             let now_ms = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap_or_default()
-                                                .as_millis() as i64;
+                                                .as_millis()
+                                                as i64;
                                             tracing::info!(
                                                 target: "orchestrator_task",
                                                 contact_id = %contact_id,
@@ -480,22 +484,26 @@ async fn dispatch(
                                                 text_preview = %first_text.chars().take(40).collect::<String>(),
                                                 "Heal (Responder): surfacing first message"
                                             );
-                                            let _ = storage.store_message(&crate::storage::StoredMessage {
-                                                id: first_message_id.clone(),
-                                                peer_id: contact_id.clone(),
-                                                text: first_text.clone(),
-                                                direction: "received".into(),
-                                                timestamp_ms: now_ms,
-                                                delivery_status: String::new(),
-                                            });
-                                            let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                                                BridgeEvent::NewMessage {
+                                            let _ = storage.store_message(
+                                                &crate::storage::StoredMessage {
+                                                    id: first_message_id.clone(),
                                                     peer_id: contact_id.clone(),
-                                                    message_id: first_message_id,
-                                                    text: first_text,
+                                                    text: first_text.clone(),
+                                                    direction: "received".into(),
                                                     timestamp_ms: now_ms,
+                                                    delivery_status: String::new(),
                                                 },
-                                            ));
+                                            );
+                                            let _ = internal_tx.send(
+                                                crate::app::InternalEventProxy::Bridge(
+                                                    BridgeEvent::NewMessage {
+                                                        peer_id: contact_id.clone(),
+                                                        message_id: first_message_id,
+                                                        text: first_text,
+                                                        timestamp_ms: now_ms,
+                                                    },
+                                                ),
+                                            );
                                         }
                                         follow_ups.push(IncomingEvent::SessionInitCompleted {
                                             contact_id: contact_id.clone(),
@@ -736,11 +744,11 @@ async fn dispatch(
 /// Fetch a pre-key bundle from the gRPC key service and return it as
 /// the JSON string expected by `Orchestrator::init_session_with_bundle`.
 async fn fetch_bundle_json(
-    grpc_url: &str,
-    access_token: &str,
-    my_user_id: &str,
-    my_device_id: &str,
-    user_id: &str,
+    _grpc_url: &str,
+    _access_token: &str,
+    _my_user_id: &str,
+    _my_device_id: &str,
+    _user_id: &str,
 ) -> Result<String> {
     // TODO: Use engine's UiEvent::FetchPreKeyBundle
     tracing::warn!("Pre-key bundle fetch requires engine integration");
@@ -880,9 +888,9 @@ fn decode_plaintext_text(plaintext: &[u8]) -> String {
 
         // Try protobuf decode first
         if let Ok(content) = MessageContent::decode(payload) {
-            if let Some(
-                construct_engine::proto::messaging::v1::message_content::Content::Text(text_msg),
-            ) = content.content
+            if let Some(construct_engine::proto::messaging::v1::message_content::Content::Text(
+                text_msg,
+            )) = content.content
             {
                 return text_msg.text;
             }

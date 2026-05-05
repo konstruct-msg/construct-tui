@@ -10,7 +10,7 @@
 //! gRPC stream. All crypto decisions flow through `construct_core`'s
 //! `Orchestrator` → `PlatformBridge` callback chain.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use construct_core::orchestration::PlatformBridge;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -127,7 +127,9 @@ impl TuiBridge {
 
     /// Subscribe the stream worker to a peer's updates.
     pub fn subscribe(&self, user_id: String) {
-        let _ = self.stream_tx.try_send(StreamCmd::Subscribe(vec![user_id], None));
+        let _ = self
+            .stream_tx
+            .try_send(StreamCmd::Subscribe(vec![user_id], None));
     }
 }
 
@@ -228,9 +230,9 @@ async fn token_refresh_loop(
 }
 
 async fn do_refresh(
-    server_url: &str,
-    device_id: &str,
-    refresh_token: &str,
+    _server_url: &str,
+    _device_id: &str,
+    _refresh_token: &str,
 ) -> Result<TokenRefreshMsg> {
     // TODO: Use engine's UiEvent::RefreshToken for token refresh
     // For now, return an error to indicate this needs engine integration

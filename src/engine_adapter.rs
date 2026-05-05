@@ -3,9 +3,14 @@
 //! This module provides the bridge between the TUI event loop and the
 //! construct-engine async runtime. It implements `EngineCallback` to receive
 //! platform actions from the engine and forwards them as `EngineEvent` to the TUI.
+//!
+//! Note: Much of this code is prepared for full engine integration and may show
+//! dead_code warnings until all UiEvent handlers are wired up in app.rs.
+
+#![allow(dead_code)]
 
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use construct_engine::{ConstructEngine, EngineCallback, EngineConfig, PlatformAction, UiEvent};
@@ -21,10 +26,7 @@ pub enum EngineEvent {
         expires_at: i64,
     },
     /// Registration completed successfully.
-    RegistrationComplete {
-        user_id: String,
-        device_id: String,
-    },
+    RegistrationComplete { user_id: String, device_id: String },
     /// Clear all auth state (logout or unrecoverable error).
     ClearAuth,
     /// Connection state changed.
@@ -41,10 +43,7 @@ pub enum EngineEvent {
         bundle_bytes: Vec<u8>,
     },
     /// OTPKs uploaded successfully.
-    OtpksUploaded {
-        uploaded: u32,
-        server_count: u32,
-    },
+    OtpksUploaded { uploaded: u32, server_count: u32 },
     /// Pre-key count updated (auto-replenish check).
     PreKeyCountUpdated {
         count: u32,
@@ -55,20 +54,11 @@ pub enum EngineEvent {
     /// Load a value from the platform keychain.
     LoadKeychain { key: String },
     /// Save a value to the platform keychain.
-    SaveKeychain {
-        key: String,
-        data: Vec<u8>,
-    },
+    SaveKeychain { key: String, data: Vec<u8> },
     /// Session initialization error.
-    SessionError {
-        contact_id: String,
-        message: String,
-    },
+    SessionError { contact_id: String, message: String },
     /// Update message delivery status.
-    UpdateMessageStatus {
-        local_id: String,
-        status: u8,
-    },
+    UpdateMessageStatus { local_id: String, status: u8 },
     /// Display a decrypted message.
     DisplayMessage {
         message_id: String,
@@ -104,13 +94,9 @@ impl EngineCallback for TuiEngineCallback {
                 refresh_token,
                 expires_at,
             }),
-            PlatformAction::RegistrationComplete {
-                user_id,
-                device_id,
-            } => Some(EngineEvent::RegistrationComplete {
-                user_id,
-                device_id,
-            }),
+            PlatformAction::RegistrationComplete { user_id, device_id } => {
+                Some(EngineEvent::RegistrationComplete { user_id, device_id })
+            }
             PlatformAction::ClearAuth => Some(EngineEvent::ClearAuth),
             PlatformAction::ConnectionStateChanged { connected } => {
                 Some(EngineEvent::ConnectionStateChanged { connected })
@@ -143,7 +129,9 @@ impl EngineCallback for TuiEngineCallback {
             }),
             PlatformAction::SpkRotated { key_id } => Some(EngineEvent::SpkRotated { key_id }),
             PlatformAction::LoadKeychain { key } => Some(EngineEvent::LoadKeychain { key }),
-            PlatformAction::SaveKeychain { key, data } => Some(EngineEvent::SaveKeychain { key, data }),
+            PlatformAction::SaveKeychain { key, data } => {
+                Some(EngineEvent::SaveKeychain { key, data })
+            }
             PlatformAction::SessionError {
                 contact_id,
                 message,
@@ -174,10 +162,10 @@ impl EngineCallback for TuiEngineCallback {
             }
         };
 
-        if let Some(evt) = event {
-            if let Err(e) = self.event_tx.send(Some(evt)) {
-                warn!("engine event dropped (receiver closed): {e}");
-            }
+        if let Some(evt) = event
+            && let Err(e) = self.event_tx.send(Some(evt))
+        {
+            warn!("engine event dropped (receiver closed): {e}");
         }
     }
 }
@@ -192,7 +180,7 @@ pub fn build_engine_config(
 ) -> EngineConfig {
     // Parse server_url to extract host and port
     let (host, port) = parse_server_url(server_url);
-    
+
     EngineConfig {
         server_host: host,
         server_port: port,
@@ -210,8 +198,10 @@ pub fn build_engine_config(
 
 fn parse_server_url(url: &str) -> (String, u16) {
     // Remove protocol prefix
-    let without_proto = url.trim_start_matches("https://").trim_start_matches("http://");
-    
+    let without_proto = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+
     // Split host and port
     if let Some((host, port_str)) = without_proto.split_once(':') {
         let port = port_str.parse().unwrap_or(443);
@@ -222,19 +212,14 @@ fn parse_server_url(url: &str) -> (String, u16) {
 }
 
 /// Spawn the engine and return a handle for dispatching events.
-pub async fn spawn_engine(
-    config: EngineConfig,
-) -> Result<EngineHandle, anyhow::Error> {
+pub async fn spawn_engine(config: EngineConfig) -> Result<EngineHandle, anyhow::Error> {
     let (event_tx, event_rx) = watch::channel::<Option<EngineEvent>>(None);
     let callback = Box::new(TuiEngineCallback::new(event_tx.clone()));
-    
+
     let engine = Arc::new(ConstructEngine::new(config, callback)?);
     engine.start()?;
-    
-    Ok(EngineHandle {
-        engine,
-        event_rx,
-    })
+
+    Ok(EngineHandle { engine, event_rx })
 }
 
 /// Handle for interacting with the running engine.
@@ -248,17 +233,17 @@ impl EngineHandle {
     pub fn dispatch(&self, event: UiEvent) {
         self.engine.dispatch(event);
     }
-    
+
     /// Get a cloned receiver for the TUI event loop.
     pub fn event_receiver(&self) -> watch::Receiver<Option<EngineEvent>> {
         self.event_rx.clone()
     }
-    
+
     /// Shutdown the engine gracefully.
     pub fn shutdown(&self) {
         self.engine.shutdown();
     }
-    
+
     /// Get reference to the engine for direct access.
     pub fn engine(&self) -> &ConstructEngine {
         &self.engine

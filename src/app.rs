@@ -85,6 +85,7 @@ pub(crate) struct AuthSuccess {
 }
 
 /// Unified internal event type — all background tasks funnel through this.
+#[allow(dead_code)]
 pub(crate) enum InternalEvent {
     Auth(AuthMsg),
     TokenRefresh(TokenRefreshMsg),
@@ -168,6 +169,7 @@ pub struct App {
     /// When `Some`, a delete-confirmation dialog is shown for the given contact id.
     delete_confirm: Option<String>,
     /// Handle to the construct-engine (set after engine initialization).
+    #[allow(dead_code)]
     engine_handle: Option<EngineHandle>,
     /// Engine event receiver for the main loop.
     engine_event_rx: Option<tokio::sync::watch::Receiver<Option<EngineEvent>>>,
@@ -304,16 +306,17 @@ impl App {
     }
 
     /// Initialize construct-engine with the given session.
+    #[allow(dead_code)]
     async fn init_engine(&mut self, session: &Session) -> Result<(), anyhow::Error> {
         use construct_core::cfe::{CfePrivateKeysV1, encode};
         use serde_bytes::ByteBuf;
-        
+
         // Encode private keys to CFE format
         let identity_secret = hex::decode(&session.identity_key_hex)?;
         let signing_secret = hex::decode(&session.signing_key_hex)?;
         let spk_secret = hex::decode(&session.spk_key_hex)?;
         let spk_sig = hex::decode(&session.spk_sig_hex)?;
-        
+
         let private_keys = CfePrivateKeysV1 {
             suite_id: 1, // CLASSIC
             ik_priv: ByteBuf::from(identity_secret),
@@ -326,8 +329,11 @@ impl App {
             spk_pub: ByteBuf::from(hex::decode(&session.spk_key_hex)?),
             old_spks: vec![],
         };
-        let keys_cfe_data = encode(construct_core::cfe::CfeMessageType::PrivateKeys, &private_keys)?;
-        
+        let keys_cfe_data = encode(
+            construct_core::cfe::CfeMessageType::PrivateKeys,
+            &private_keys,
+        )?;
+
         let config = build_engine_config(
             &self.server_url,
             Some(&session.user_id),
@@ -335,16 +341,16 @@ impl App {
             Some(&session.access_token),
             &keys_cfe_data,
         );
-        
+
         self.engine_handle = Some(crate::engine_adapter::spawn_engine(config).await?);
-        
+
         if let Some(ref handle) = self.engine_handle {
             self.engine_event_rx = Some(handle.event_receiver());
-            
+
             // Signal platform ready to start engine operations
             handle.dispatch(UiEvent::PlatformReady);
         }
-        
+
         Ok(())
     }
 
@@ -352,26 +358,27 @@ impl App {
     fn start_auth_restore_preloaded(&mut self, session: Session) {
         let tx = self.internal_tx.clone();
         let server_url = self.server_url.clone();
-        
+
         tokio::spawn(async move {
             // For now, use the legacy auth path
             // TODO: Use engine's UiEvent::Authenticate
-            let msg = match crate::auth::authenticate_saved_session(session.clone(), &server_url).await {
-                Ok(r) => {
-                    let full = r
-                        .session
-                        .clone()
-                        .expect("authenticate_saved_session always returns session");
-                    AuthMsg::Success(Box::new(AuthSuccess {
-                        user_id: r.user_id,
-                        device_id: r.device_id,
-                        access_token: r.access_token,
-                        full_session: full.clone(),
-                        pending_save: r.session,
-                    }))
-                }
-                Err(e) => AuthMsg::Failure(format!("{e:#}")),
-            };
+            let msg =
+                match crate::auth::authenticate_saved_session(session.clone(), &server_url).await {
+                    Ok(r) => {
+                        let full = r
+                            .session
+                            .clone()
+                            .expect("authenticate_saved_session always returns session");
+                        AuthMsg::Success(Box::new(AuthSuccess {
+                            user_id: r.user_id,
+                            device_id: r.device_id,
+                            access_token: r.access_token,
+                            full_session: full.clone(),
+                            pending_save: r.session,
+                        }))
+                    }
+                    Err(e) => AuthMsg::Failure(format!("{e:#}")),
+                };
             let _ = tx.send(InternalEvent::Auth(msg));
         });
         self.screen = Screen::Connecting("Authenticating…".into());
@@ -514,7 +521,7 @@ impl App {
                 self.user_id = user_id.clone();
                 self.access_token = access_token.clone();
                 self.status = format!("Connected as {}", user_id);
-                
+
                 // Update session if we have one
                 if let Some(ref mut session) = self.current_session {
                     session.access_token = access_token;
@@ -551,10 +558,16 @@ impl App {
             EngineEvent::PreKeyBundleReady { .. } => {
                 // Handled by orchestrator
             }
-            EngineEvent::OtpksUploaded { uploaded, server_count } => {
+            EngineEvent::OtpksUploaded {
+                uploaded,
+                server_count,
+            } => {
                 tracing::info!("OTPKs uploaded: {} (server: {})", uploaded, server_count);
             }
-            EngineEvent::PreKeyCountUpdated { count, recommended_minimum } => {
+            EngineEvent::PreKeyCountUpdated {
+                count,
+                recommended_minimum,
+            } => {
                 tracing::info!("Prekey count: {} (min: {})", count, recommended_minimum);
             }
             EngineEvent::SpkRotated { key_id } => {
@@ -566,9 +579,16 @@ impl App {
             }
             EngineEvent::SaveKeychain { key, data } => {
                 // Handle keychain save request from engine
-                tracing::debug!("Engine requests keychain save: {} ({} bytes)", key, data.len());
+                tracing::debug!(
+                    "Engine requests keychain save: {} ({} bytes)",
+                    key,
+                    data.len()
+                );
             }
-            EngineEvent::SessionError { contact_id, message } => {
+            EngineEvent::SessionError {
+                contact_id,
+                message,
+            } => {
                 self.status = format!("Session error ({}): {}", contact_id, message);
             }
             EngineEvent::UpdateMessageStatus { local_id, status } => {
@@ -589,15 +609,8 @@ impl App {
     }
 
     /// Update message status UI (sent/delivered/read).
-    fn callback_on_message_status(&mut self, local_id: &str, status: u8) {
-        use crate::screens::chat_view::ChatMessage;
-        
-        // Find and update the message status in chat view
-        if let Some(msg) = self.chat_view.messages.iter_mut().find(|m| m.id == local_id) {
-            // Update status indicator based on status code
-            // 0=pending, 1=sent, 2=delivered, 3=read
-            tracing::debug!("Message {} status: {}", local_id, status);
-        }
+    fn callback_on_message_status(&mut self, _local_id: &str, _status: u8) {
+        // TODO: Implement message status UI updates
     }
 
     /// Handle a decrypted message from the engine.
@@ -609,13 +622,13 @@ impl App {
         conversation_id: String,
     ) {
         use crate::screens::chat_view::{ChatMessage, MessageKind};
-        
+
         let text = String::from_utf8_lossy(&plaintext).into_owned();
         let time = current_time_hhmm();
-        
+
         // Add to chat view if it's the current conversation
-        if self.chat_view.contact_name == conversation_id 
-            || self.chat_view.contact_name == sender_id 
+        if self.chat_view.contact_name == conversation_id
+            || self.chat_view.contact_name == sender_id
         {
             self.chat_view.messages.push(ChatMessage {
                 id: message_id,
@@ -625,7 +638,7 @@ impl App {
             });
             self.chat_view.on_new_message();
         }
-        
+
         // TODO: Save to storage when engine integration is complete
         // The engine handles persistence via SaveKeychain callbacks
     }
@@ -1499,7 +1512,7 @@ impl App {
                     self.contact_search.searching = true;
                     // TODO: Use engine's UiEvent::SearchUser for contact search
                     let tx = self.internal_tx.clone();
-                    let q = query.clone();
+                    let _q = query.clone();
                     tokio::spawn(async move {
                         // Stub: return empty results until engine integration
                         tracing::warn!("Contact search requires engine integration");
