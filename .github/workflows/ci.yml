@@ -23,6 +23,26 @@ jobs:
       - name: Checkout construct-tui
         uses: actions/checkout@v4
 
+      # construct-tui has a path dependency on construct-core
+      # (`construct-core = { path = "../construct-core" }`), resolved relative
+      # to construct-tui's own checkout dir — so construct-core must land as
+      # a true sibling, one level above $GITHUB_WORKSPACE.
+      - name: Checkout construct-core (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: maximeliseyev/construct-core
+          path: ../construct-core
+
+      # construct-core itself has a path dependency on construct-veil
+      # (`construct-veil = { path = "../construct-veil" }`, optional but still
+      # read by `cargo metadata` during fmt/clippy/test) — needs to be a
+      # sibling of construct-core.
+      - name: Checkout construct-veil (construct-core's path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: maximeliseyev/construct-veil
+          path: ../construct-veil
+
       - name: Checkout construct-protos
         uses: actions/checkout@v4
         with:
@@ -71,6 +91,18 @@ jobs:
       - name: Checkout construct-tui
         uses: actions/checkout@v4
 
+      - name: Checkout construct-core (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: maximeliseyev/construct-core
+          path: ../construct-core
+
+      - name: Checkout construct-veil (construct-core's path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: maximeliseyev/construct-veil
+          path: ../construct-veil
+
       - name: Checkout construct-protos
         uses: actions/checkout@v4
         with:
@@ -114,6 +146,18 @@ jobs:
     steps:
       - name: Checkout construct-tui
         uses: actions/checkout@v4
+
+      - name: Checkout construct-core (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: maximeliseyev/construct-core
+          path: ../construct-core
+
+      - name: Checkout construct-veil (construct-core's path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: maximeliseyev/construct-veil
+          path: ../construct-veil
 
       - name: Checkout construct-protos
         uses: actions/checkout@v4
