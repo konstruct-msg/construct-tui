@@ -6,15 +6,15 @@ Built with Rust + [Ratatui](https://ratatui.rs). Target platforms: Linux, macOS.
 
 
 ```
-┌─ KONSTRUCT ─────────────────────────────────────────────────────────────────┐
-│ > CONTACTS                 │ [alice]  15:42                                 │
-│   alice           15:42    │ hey, got the new build running                 │
-│   bob             14:11    │                                                │
-│   carol           11:03    │ [you]  15:43                                   │
-│                            │ works on the Pi Zero too now                   │
-│                            │                                                │
-│                            │ ▌                                              │
-└────────────────────────────┴────────────────────────────────────────────────┘
+ KONSTRUCT   CHATS · Phosphor
+┌[ Chats ]────────────────────┐┌[ alice ]─────────────────────────────────────┐
+│ ▸ alice                    ││ [15:42] hey, got the new build running        │
+│   bob                      ││   works on the Pi Zero too now  [15:43]       │
+│   carol                    ││                                               │
+│                            │├[ Message ]───────────────────────────────────┤
+│                            ││ Write a message…                              │
+└────────────────────────────┘└───────────────────────────────────────────────┘
+ ● connected │ Ready │ ↑↓ choose  Enter open  a add  s settings  q quit
 ```
 
 License: [MPL-2.0](LICENSE). Trademark: [TRADEMARK.md](TRADEMARK.md).
@@ -35,7 +35,11 @@ messenger yet. The next gate is a live 1:1 text exchange with iOS on `ams.konstr
 | **tmux** | Works — set `TERM=xterm-256color` or `tmux-256color` |
 | Apple Terminal | 256 colors only, no true color |
 
-Minimum terminal size: **80×24**.
+Minimum terminal size: **80×24**. At widths below 96 columns, the active pane fills the screen; use `Enter`, `Tab`, or `Esc` to move between chats and the conversation.
+
+The interface has **Phosphor** (dark) and **Paper** (light) themes. Both use Konstruct blue `#008CFF` for focus and selection. Choose a theme with `T` in Settings; the choice is saved in `~/.config/construct-tui/config.json`.
+
+Visual tokens and shared panel, text, selection, and state styles live in [`src/theme.rs`](src/theme.rs). Each screen receives the active theme from `App::render`; new screens should use those styles instead of terminal default colors. QR modules stay black on white in both themes so a camera can read them.
 
 ---
 
@@ -165,6 +169,7 @@ this client. First real send/recv against iOS still needs a live session.
 | `↑` / `↓` | Navigate |
 | `Enter` | Select / confirm |
 | `Esc` / `q` | Back to chat |
+| `t` | Switch between Phosphor and Paper themes |
 
 ### Add contact (search overlay)
 

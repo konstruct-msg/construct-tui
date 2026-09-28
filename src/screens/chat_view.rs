@@ -1,9 +1,10 @@
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget, Wrap},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +27,7 @@ pub struct ChatViewPane {
     pub compose: String,
     pub focused: bool,
     pub compose_focused: bool,
+    pub theme: ThemeMode,
     /// How many messages to skip from the bottom (0 = show latest).
     scroll_offset: usize,
 }
@@ -38,6 +40,7 @@ impl ChatViewPane {
             compose: String::new(),
             focused: false,
             compose_focused: false,
+            theme: ThemeMode::default(),
             scroll_offset: 0,
         }
     }
@@ -88,16 +91,11 @@ impl ChatViewPane {
 
 impl Widget for &mut ChatViewPane {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let border_style = if self.focused || self.compose_focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
-        let outer = Block::default()
-            .title(format!(" {} ", self.contact_name))
-            .borders(Borders::ALL)
-            .border_style(border_style);
+        let palette = self.theme.palette();
+        let outer = palette.panel(
+            format!(" {} ", self.contact_name),
+            self.focused || self.compose_focused,
+        );
 
         let inner = outer.inner(area);
         outer.render(area, buf);
@@ -132,23 +130,19 @@ impl Widget for &mut ChatViewPane {
             .iter()
             .map(|m| {
                 if m.kind == MessageKind::Sent {
-                    let time = Span::styled(
-                        format!("[{}] ", m.time),
-                        Style::default().fg(Color::DarkGray),
-                    );
+                    let time =
+                        Span::styled(format!("[{}] ", m.time), Style::default().fg(palette.muted));
                     let text = Span::styled(
                         &m.text,
                         Style::default()
-                            .fg(Color::White)
+                            .fg(palette.foreground)
                             .add_modifier(Modifier::BOLD),
                     );
                     Line::from(vec![Span::raw("  "), text, Span::raw("  "), time])
                 } else {
-                    let time = Span::styled(
-                        format!("[{}] ", m.time),
-                        Style::default().fg(Color::DarkGray),
-                    );
-                    let text = Span::styled(&m.text, Style::default().fg(Color::Cyan));
+                    let time =
+                        Span::styled(format!("[{}] ", m.time), Style::default().fg(palette.muted));
+                    let text = Span::styled(&m.text, Style::default().fg(palette.accent));
                     Line::from(vec![time, text])
                 }
             })
@@ -158,29 +152,24 @@ impl Widget for &mut ChatViewPane {
         if let Some(hint) = scroll_hint {
             msg_lines.push(Line::from(Span::styled(
                 hint,
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(palette.warning),
             )));
         }
 
         Paragraph::new(msg_lines)
             .wrap(Wrap { trim: false })
+            .style(palette.surface())
             .render(chunks[0], buf);
 
         // Compose box
-        let compose_border_style = if self.compose_focused {
-            Style::default().fg(Color::Cyan)
+        let compose_text = if self.compose.is_empty() && !self.compose_focused {
+            "Write a message…".to_owned()
         } else {
-            Style::default().fg(Color::DarkGray)
+            format!("{}_", self.compose)
         };
-        let compose_text = format!("{}_", self.compose);
         Paragraph::new(compose_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(compose_border_style)
-                    .title(" Message "),
-            )
-            .style(Style::default().fg(Color::White))
+            .block(palette.panel(" Message ", self.compose_focused))
+            .style(palette.surface())
             .render(chunks[1], buf);
     }
 }

@@ -11,6 +11,7 @@ mod proto;
 mod screens;
 mod storage;
 mod streaming;
+mod theme;
 mod tui;
 
 use anyhow::Result;
@@ -179,6 +180,7 @@ async fn main() -> Result<()> {
         no_encrypt,
         headless: cli.headless,
         pq_active: cli.post_quantum,
+        theme: file_config.theme,
     };
 
     let mut terminal = tui::init()?;

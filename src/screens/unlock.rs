@@ -2,11 +2,12 @@
 //!   `Unlock`    — enter passphrase to decrypt an existing session on startup.
 //!   `SetNew`    — choose a passphrase to protect a newly created session.
 
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Widget},
+    style::Modifier,
+    widgets::{Paragraph, Widget},
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -19,6 +20,7 @@ pub enum UnlockMode {
 }
 
 pub struct UnlockScreen {
+    pub theme: ThemeMode,
     /// Raw passphrase bytes — zeroized on drop.
     passphrase: Zeroizing<String>,
     pub error: Option<String>,
@@ -28,6 +30,7 @@ pub struct UnlockScreen {
 impl UnlockScreen {
     pub fn new(mode: UnlockMode) -> Self {
         Self {
+            theme: ThemeMode::default(),
             passphrase: Zeroizing::new(String::new()),
             error: None,
             mode,
@@ -76,6 +79,7 @@ impl UnlockScreen {
 
 impl Widget for &UnlockScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let palette = self.theme.palette();
         let (title, hint, field_title) = match self.mode {
             UnlockMode::Unlock => (
                 " Unlock session ",
@@ -102,37 +106,29 @@ impl Widget for &UnlockScreen {
         // ── Title ─────────────────────────────────────────────────────────────
         let tw = title.len() as u16;
         let tx = area.x + area.width.saturating_sub(tw) / 2;
-        Paragraph::new(title)
-            .style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .render(
-                Rect {
-                    x: tx,
-                    y,
-                    width: tw.min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(title).style(palette.emphasis()).render(
+            Rect {
+                x: tx,
+                y,
+                width: tw.min(area.width),
+                height: 1,
+            },
+            buf,
+        );
         y += 2;
 
         // ── Subtitle ──────────────────────────────────────────────────────────
         let sw = subtitle.len() as u16;
         let sx = area.x + area.width.saturating_sub(sw) / 2;
-        Paragraph::new(subtitle)
-            .style(Style::default().fg(Color::DarkGray))
-            .render(
-                Rect {
-                    x: sx,
-                    y,
-                    width: sw.min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(subtitle).style(palette.muted()).render(
+            Rect {
+                x: sx,
+                y,
+                width: sw.min(area.width),
+                height: 1,
+            },
+            buf,
+        );
         y += 2;
 
         // ── Passphrase field (masked) ─────────────────────────────────────────
@@ -142,13 +138,8 @@ impl Widget for &UnlockScreen {
         let masked = format!("{}_", "•".repeat(self.passphrase.len()));
 
         Paragraph::new(masked)
-            .block(
-                Block::default()
-                    .title(field_title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            )
-            .style(Style::default().fg(Color::White))
+            .block(palette.panel(field_title, true))
+            .style(palette.surface())
             .render(
                 Rect {
                     x: field_x,
@@ -164,7 +155,7 @@ impl Widget for &UnlockScreen {
         if let Some(ref err) = self.error {
             let ex = area.x + area.width.saturating_sub(err.len() as u16) / 2;
             Paragraph::new(err.as_str())
-                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                .style(palette.state(true).add_modifier(Modifier::BOLD))
                 .render(
                     Rect {
                         x: ex,
@@ -178,16 +169,14 @@ impl Widget for &UnlockScreen {
         }
 
         let hx = area.x + area.width.saturating_sub(hint.len() as u16) / 2;
-        Paragraph::new(hint)
-            .style(Style::default().fg(Color::DarkGray))
-            .render(
-                Rect {
-                    x: hx,
-                    y,
-                    width: (hint.len() as u16).min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(hint).style(palette.muted()).render(
+            Rect {
+                x: hx,
+                y,
+                width: (hint.len() as u16).min(area.width),
+                height: 1,
+            },
+            buf,
+        );
     }
 }

@@ -7,12 +7,12 @@
 //! **SHOW** tab: this device generated a link token; display it as a QR code
 //!   for the new device to scan with the mobile app or another TUI instance.
 
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 use super::qr_widget::QrWidget;
@@ -26,6 +26,7 @@ pub enum DeviceLinkTab {
 }
 
 pub struct DeviceLinkScreen {
+    pub theme: ThemeMode,
     pub tab: DeviceLinkTab,
     /// Token typed by the user (SCAN tab).
     pub token: String,
@@ -39,6 +40,7 @@ pub struct DeviceLinkScreen {
 impl DeviceLinkScreen {
     pub fn new() -> Self {
         Self {
+            theme: ThemeMode::default(),
             tab: DeviceLinkTab::Scan,
             token: String::new(),
             own_token: None,
@@ -80,28 +82,23 @@ impl DeviceLinkScreen {
 
 impl Widget for &DeviceLinkScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let palette = self.theme.palette();
         // ── Tab bar ───────────────────────────────────────────────────────────
         let tab_scan = if self.tab == DeviceLinkTab::Scan {
-            Span::styled(
-                " [SCAN] ",
-                Style::default().fg(Color::Black).bg(Color::Cyan),
-            )
+            Span::styled(" [SCAN] ", palette.selected())
         } else {
-            Span::styled(" [SCAN] ", Style::default().fg(Color::DarkGray))
+            Span::styled(" [SCAN] ", palette.muted())
         };
         let tab_show = if self.tab == DeviceLinkTab::Show {
-            Span::styled(
-                " [SHOW QR] ",
-                Style::default().fg(Color::Black).bg(Color::Cyan),
-            )
+            Span::styled(" [SHOW QR] ", palette.selected())
         } else {
-            Span::styled(" [SHOW QR] ", Style::default().fg(Color::DarkGray))
+            Span::styled(" [SHOW QR] ", palette.muted())
         };
-        let tab_hint = Span::styled("  Tab=switch tab", Style::default().fg(Color::DarkGray));
+        let tab_hint = Span::styled("  Tab=switch tab", palette.muted());
 
         let tab_line = Line::from(vec![tab_scan, tab_show, tab_hint]);
         let tab_w = area.width;
-        Paragraph::new(tab_line).render(
+        Paragraph::new(tab_line).style(palette.canvas()).render(
             Rect {
                 x: area.x,
                 y: area.y,
@@ -127,7 +124,8 @@ impl Widget for &DeviceLinkScreen {
 
 impl DeviceLinkScreen {
     fn render_scan(&self, area: Rect, buf: &mut Buffer) {
-        const TITLE: &str = " Link existing account — enter token ";
+        let palette = self.theme.palette();
+        const TITLE: &str = " Link this device — enter token ";
         const HINT: &str = "Enter=confirm   Esc=back   q=quit";
 
         let total_h = 1u16 + 2 + 3 + 1 + 1 + 1 + 1;
@@ -136,33 +134,22 @@ impl DeviceLinkScreen {
 
         let tw = TITLE.len() as u16;
         let tx = area.x + area.width.saturating_sub(tw) / 2;
-        Paragraph::new(TITLE)
-            .style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .render(
-                Rect {
-                    x: tx,
-                    y,
-                    width: tw.min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(TITLE).style(palette.emphasis()).render(
+            Rect {
+                x: tx,
+                y,
+                width: tw.min(area.width),
+                height: 1,
+            },
+            buf,
+        );
         y += 2;
 
         let field_w = 50u16.min(area.width.saturating_sub(4));
         let field_x = area.x + area.width.saturating_sub(field_w) / 2;
         Paragraph::new(format!("{}_", self.token))
-            .block(
-                Block::default()
-                    .title(" Link Token ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            )
-            .style(Style::default().fg(Color::White))
+            .block(palette.panel(" Link token ", true))
+            .style(palette.surface())
             .render(
                 Rect {
                     x: field_x,
@@ -175,63 +162,61 @@ impl DeviceLinkScreen {
         y += 4;
 
         if let Some(ref msg) = self.status {
-            let color = if self.is_error {
-                Color::Red
+            let status_style = if self.is_error {
+                palette.state(true)
             } else {
-                Color::DarkGray
+                palette.muted()
             };
             let sx = area.x + area.width.saturating_sub(msg.len() as u16) / 2;
-            Paragraph::new(msg.as_str())
-                .style(Style::default().fg(color))
-                .render(
-                    Rect {
-                        x: sx,
-                        y,
-                        width: (msg.len() as u16).min(area.width),
-                        height: 1,
-                    },
-                    buf,
-                );
-            y += 2;
-        }
-
-        let hx = area.x + area.width.saturating_sub(HINT.len() as u16) / 2;
-        Paragraph::new(HINT)
-            .style(Style::default().fg(Color::DarkGray))
-            .render(
+            Paragraph::new(msg.as_str()).style(status_style).render(
                 Rect {
-                    x: hx,
+                    x: sx,
                     y,
-                    width: (HINT.len() as u16).min(area.width),
+                    width: (msg.len() as u16).min(area.width),
                     height: 1,
                 },
                 buf,
             );
+            y += 2;
+        }
+
+        let hx = area.x + area.width.saturating_sub(HINT.len() as u16) / 2;
+        Paragraph::new(HINT).style(palette.muted()).render(
+            Rect {
+                x: hx,
+                y,
+                width: (HINT.len() as u16).min(area.width),
+                height: 1,
+            },
+            buf,
+        );
     }
 
     fn render_show(&self, area: Rect, buf: &mut Buffer) {
+        let palette = self.theme.palette();
         match &self.own_token {
             None => {
                 // Token not yet generated — show loading hint
                 let msg = "Generating link token…";
                 let x = area.x + area.width.saturating_sub(msg.len() as u16) / 2;
                 let y = area.y + area.height / 2;
-                Paragraph::new(msg)
-                    .style(Style::default().fg(Color::DarkGray))
-                    .render(
-                        Rect {
-                            x,
-                            y,
-                            width: msg.len() as u16,
-                            height: 1,
-                        },
-                        buf,
-                    );
+                Paragraph::new(msg).style(palette.muted()).render(
+                    Rect {
+                        x,
+                        y,
+                        width: msg.len() as u16,
+                        height: 1,
+                    },
+                    buf,
+                );
             }
             Some(token) => {
                 // Show QR code centred in the available area
-                let caption = "Scan with Construct iOS app or another device";
-                QrWidget::new(token).caption(caption).render(area, buf);
+                let caption = "Scan with Konstruct on another device";
+                QrWidget::new(token)
+                    .caption(caption)
+                    .theme(self.theme)
+                    .render(area, buf);
 
                 // Token text below (for manual entry fallback)
                 let token_display = format!("Token: {}", token);
@@ -239,7 +224,7 @@ impl DeviceLinkScreen {
                 let tx = area.x + area.width.saturating_sub(td_w) / 2;
                 let ty = area.y + area.height.saturating_sub(1);
                 Paragraph::new(token_display.as_str())
-                    .style(Style::default().fg(Color::DarkGray))
+                    .style(palette.muted())
                     .render(
                         Rect {
                             x: tx,

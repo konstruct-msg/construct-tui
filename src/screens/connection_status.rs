@@ -2,10 +2,11 @@
 
 use std::time::{Duration, Instant};
 
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -63,15 +64,6 @@ impl ConnectionState {
             }
         }
     }
-
-    pub fn color(&self) -> Color {
-        match self {
-            Self::Connected { .. } => Color::Green,
-            Self::Reconnecting { .. } => Color::Yellow,
-            Self::Connecting { .. } => Color::Cyan,
-            Self::Disconnected => Color::Red,
-        }
-    }
 }
 
 /// Single-line status bar rendered at the bottom of the main view.
@@ -80,15 +72,22 @@ pub struct StatusBar<'a> {
     pub status_text: &'a str,
     pub unread_count: usize,
     pub pq_active: bool,
+    pub theme: ThemeMode,
 }
 
 impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let conn_label = self.connection.label();
-        let conn_color = self.connection.color();
+        let palette = self.theme.palette();
+        let conn_color = match self.connection {
+            ConnectionState::Connected { .. } => palette.success,
+            ConnectionState::Connecting { .. } => palette.accent,
+            ConnectionState::Reconnecting { .. } => palette.warning,
+            ConnectionState::Disconnected => palette.danger,
+        };
 
         let pq_badge = if self.pq_active {
-            Span::styled(" [PQ] ", Style::default().fg(Color::Magenta))
+            Span::styled(" [PQ] ", Style::default().fg(palette.accent))
         } else {
             Span::raw("")
         };
@@ -96,13 +95,13 @@ impl Widget for StatusBar<'_> {
         let unread = if self.unread_count > 0 {
             Span::styled(
                 format!(" {} unread ", self.unread_count),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(palette.warning),
             )
         } else {
             Span::raw("")
         };
 
-        let sep = Span::styled(" │ ", Style::default().fg(Color::DarkGray));
+        let sep = Span::styled(" │ ", Style::default().fg(palette.border));
 
         let line = Line::from(vec![
             Span::styled(" ", Style::default()),
@@ -111,9 +110,11 @@ impl Widget for StatusBar<'_> {
             sep.clone(),
             unread,
             sep,
-            Span::styled(self.status_text, Style::default().fg(Color::DarkGray)),
+            Span::styled(self.status_text, Style::default().fg(palette.muted)),
         ]);
 
-        Paragraph::new(line).render(area, buf);
+        Paragraph::new(line)
+            .style(Style::default().bg(palette.background))
+            .render(area, buf);
     }
 }

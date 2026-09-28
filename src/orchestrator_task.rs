@@ -16,15 +16,13 @@
 //!                              └────────────────────────────────────────────────
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use construct_core::crypto::handshake::x3dh::X3DHPublicKeyBundle;
 use construct_core::orchestration::{
     actions::{Action, IncomingEvent},
     orchestrator::Orchestrator,
 };
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
@@ -54,6 +52,13 @@ impl OrchestratorHandle {
         let _ = self
             .cmd_tx
             .send(OrchestratorCommand::ForgetContact { contact_id });
+    }
+
+    /// Mark a contact as locally known before opening/proactively initializing it.
+    pub fn remember_contact(&self, contact_id: String) {
+        let _ = self
+            .cmd_tx
+            .send(OrchestratorCommand::RememberContact { contact_id });
     }
 
     /// Route an inbound stream message with its server cursor context.
@@ -86,6 +91,9 @@ enum OrchestratorCommand {
     ForgetContact {
         contact_id: String,
     },
+    RememberContact {
+        contact_id: String,
+    },
     StreamMessage {
         event: IncomingEvent,
         context: StreamMessageContext,
@@ -102,6 +110,7 @@ enum OrchestratorCommand {
 /// * `internal_tx` — channel back to the UI app event loop (BridgeEvent)
 /// * `grpc` — shared gRPC client (bundle fetch)
 /// * `cursor` — stream watermark, advanced after inbound persist
+/// * `known_contacts` — local contact ids allowed to enter the core receive path
 /// * `my_user_id` / `my_device_id` — local identity for Envelope construction
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_orchestrator_task(
@@ -111,6 +120,7 @@ pub fn spawn_orchestrator_task(
     internal_tx: mpsc::UnboundedSender<crate::app::InternalEventProxy>,
     grpc: GrpcClient,
     cursor: CursorTracker,
+    known_contacts: Vec<String>,
     my_user_id: String,
     my_device_id: String,
 ) -> OrchestratorHandle {
@@ -128,6 +138,7 @@ pub fn spawn_orchestrator_task(
         internal_tx,
         grpc,
         cursor,
+        known_contacts,
         my_user_id,
         my_device_id,
         tx,
@@ -148,6 +159,7 @@ async fn run(
     internal_tx: mpsc::UnboundedSender<crate::app::InternalEventProxy>,
     grpc: GrpcClient,
     cursor: CursorTracker,
+    known_contacts: Vec<String>,
     my_user_id: String,
     my_device_id: String,
     self_tx: mpsc::UnboundedSender<IncomingEvent>,
@@ -156,6 +168,7 @@ async fn run(
 ) {
     let mut timers: HashMap<String, AbortHandle> = HashMap::new();
     let mut session_established_at_ms: HashMap<String, u64> = HashMap::new();
+    let mut known_contacts: HashSet<String> = known_contacts.into_iter().collect();
 
     loop {
         let event = tokio::select! {
@@ -176,6 +189,7 @@ async fn run(
                     &self_tx,
                     &mut timers,
                     &mut session_established_at_ms,
+                    &mut known_contacts,
                 )
                 .await;
                 continue;
@@ -283,38 +297,14 @@ async fn handle_command(
     self_tx: &mpsc::UnboundedSender<IncomingEvent>,
     timers: &mut HashMap<String, AbortHandle>,
     session_established_at_ms: &mut HashMap<String, u64>,
+    known_contacts: &mut HashSet<String>,
 ) {
     match command {
         OrchestratorCommand::ForgetContact { contact_id } => {
-            let actions = orchestrator.handle_event(IncomingEvent::ActiveChatChanged {
-                contact_id: contact_id.clone(),
-                is_active: false,
-            });
-            let mut follow_ups = Vec::new();
-            let mut session_inited = std::collections::HashSet::new();
-            for action in actions {
-                dispatch(
-                    action,
-                    orchestrator,
-                    storage,
-                    stream_tx,
-                    internal_tx,
-                    grpc,
-                    cursor,
-                    my_user_id,
-                    my_device_id,
-                    self_tx,
-                    timers,
-                    &mut follow_ups,
-                    &mut session_inited,
-                    session_established_at_ms,
-                )
-                .await;
-            }
-
             let had_active_session = orchestrator.has_active_session(&contact_id);
             orchestrator.forget_contact_state(&contact_id);
             session_established_at_ms.remove(&contact_id);
+            known_contacts.remove(&contact_id);
             match orchestrator.export_orchestrator_state_cfe() {
                 Ok(state) => {
                     if let Err(e) =
@@ -364,7 +354,29 @@ async fn handle_command(
                 "forgot contact session material"
             );
         }
+        OrchestratorCommand::RememberContact { contact_id } => {
+            known_contacts.insert(contact_id.clone());
+            tracing::debug!(
+                target: "orchestrator_task",
+                contact_id = %contact_id,
+                "remembered contact for stream routing"
+            );
+        }
         OrchestratorCommand::StreamMessage { event, context } => {
+            if !known_contacts.contains(&context.contact_id) {
+                cursor.commit_direct(storage, context.stream_cursor.clone());
+                tracing::warn!(
+                    target: "orchestrator_task",
+                    contact_id = %context.contact_id,
+                    message_id = %context.message_id,
+                    content_type = context.content_type,
+                    msg_num = context.msg_num,
+                    stream_cursor = ?context.stream_cursor,
+                    "dropped stream message from unknown contact"
+                );
+                return;
+            }
+
             if should_drop_stale_session_replay(&context, session_established_at_ms) {
                 cursor.commit_direct(storage, context.stream_cursor.clone());
                 tracing::warn!(
@@ -447,137 +459,51 @@ async fn dispatch(
 ) {
     match action {
         // ── Crypto (platform must handle synchronously) ────────────────────
-        Action::InitSession {
-            contact_id,
-            bundle_json,
-        } => {
-            // Detect RESPONDER case: the peer already sent us their X3DH first message
-            // (msgNum=0) which is queued in the orchestrator's pending queue.
-            // In that case we must init as RESPONDER (not INITIATOR) using their
-            // wire payload so that the X3DH shared secret matches on both sides.
-            if orchestrator.pending_message_count(&contact_id) > 0 {
-                // RESPONDER path — take the first pending wire payload.
-                if let Some(wire) = orchestrator.peek_first_pending_wire_payload(&contact_id) {
-                    match orchestrator.init_receiving_session_from_wire_payload(
-                        &contact_id,
-                        bundle_json.as_bytes(),
-                        &wire,
-                    ) {
-                        Ok((_, first_plaintext)) => {
-                            tracing::info!(
-                                target: "orchestrator_task",
-                                contact_id = %contact_id,
-                                "InitSession (Responder): session established from wire payload"
-                            );
-                            // Consume the init message from the pending queue so that
-                            // drain_pending does not try to re-decrypt it (msg_num=0 key
-                            // was already consumed by init_receiving_session_from_wire_payload).
-                            let first_message_id = orchestrator
-                                .pop_first_pending(&contact_id)
-                                .unwrap_or_else(uuid_v4);
-                            session_inited.insert(contact_id.clone());
-
-                            // Surface the first message (msg_num=0) — the plaintext was
-                            // returned by init_receiving_session_from_wire_payload but is not
-                            // re-emitted as MessageDecrypted by the Rust layer, so we handle it
-                            // here.  Skip pure control messages (ping/heartbeat/empty).
-                            let first_text = crate::knst::decode_text(&first_plaintext);
-                            if !first_text.is_empty()
-                                && !first_text.starts_with('\0')
-                                && !first_text.contains("__session_ping_")
-                                && !first_text.contains("__heartbeat__")
-                            {
-                                let now_ms = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis()
-                                    as i64;
-                                tracing::info!(
-                                    target: "orchestrator_task",
-                                    contact_id = %contact_id,
-                                    message_id = %first_message_id,
-                                    text_preview = %first_text.chars().take(40).collect::<String>(),
-                                    "InitSession (Responder): surfacing first message"
-                                );
-                                persist_inbound(
-                                    storage,
-                                    cursor,
-                                    &first_message_id,
-                                    crate::storage::StoredMessage {
-                                        id: first_message_id.clone(),
-                                        peer_id: contact_id.clone(),
-                                        text: first_text.clone(),
-                                        direction: "received".into(),
-                                        timestamp_ms: now_ms,
-                                        delivery_status: String::new(),
-                                    },
-                                );
-                                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                                    BridgeEvent::NewMessage {
-                                        peer_id: contact_id.clone(),
-                                        message_id: first_message_id,
-                                        text: first_text,
-                                        timestamp_ms: now_ms,
-                                    },
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                target: "orchestrator_task",
-                                contact_id = %contact_id,
-                                error = %e,
-                                "InitSession (Responder): init_receiving_session failed"
-                            );
-                            return;
-                        }
-                    }
-                } else {
-                    tracing::warn!(
-                        target: "orchestrator_task",
-                        contact_id = %contact_id,
-                        "InitSession (Responder): pending_count>0 but no wire payload — falling back to Initiator"
-                    );
-                    if let Err(e) =
-                        init_initiator_from_json(orchestrator, &contact_id, &bundle_json)
-                    {
-                        tracing::error!(
-                            target: "orchestrator_task",
-                            contact_id = %contact_id,
-                            error = %e,
-                            "InitSession (Initiator fallback): init_session_with_bundle failed"
-                        );
-                        let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                            BridgeEvent::Error(format!("[SESSION_INIT_FAILED] {e}")),
-                        ));
-                        return;
-                    }
-                }
-            } else if let Err(e) = init_initiator_from_json(orchestrator, &contact_id, &bundle_json)
-            {
-                tracing::error!(
-                    target: "orchestrator_task",
-                    contact_id = %contact_id,
-                    error = %e,
-                    "InitSession (Initiator): init_session_with_bundle failed"
-                );
-                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                    BridgeEvent::Error(format!("[SESSION_INIT_FAILED] {e}")),
-                ));
-                return;
+        Action::OpenReceiving { contact_id } => {
+            let opened = orchestrator.open_receiving(&contact_id);
+            if opened.awaiting_server_key {
+                tracing::warn!(%contact_id, "trusted server key is required to open receiving session");
             }
-            session_inited.insert(contact_id.clone());
-            session_established_at_ms.insert(contact_id.clone(), now_ms_u64());
-            follow_ups.push(IncomingEvent::SessionInitCompleted {
-                contact_id,
-                session_data: vec![],
+            if let Some(error) = opened.last_error {
+                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
+                    BridgeEvent::Error(format!("[SESSION_OPEN] {error}")),
+                ));
+            }
+            for action in opened.actions {
+                Box::pin(dispatch(
+                    action,
+                    orchestrator,
+                    storage,
+                    stream_tx,
+                    internal_tx,
+                    grpc,
+                    cursor,
+                    my_user_id,
+                    my_device_id,
+                    self_tx,
+                    timers,
+                    follow_ups,
+                    session_inited,
+                    session_established_at_ms,
+                ))
+                .await;
+            }
+        }
+        Action::OpenSession { contact_id } => {
+            let tx = self_tx.clone();
+            let grpc = grpc.clone();
+            tokio::spawn(async move {
+                let bundle = fetch_bundle(&grpc, &contact_id)
+                    .await
+                    .map(|f| f.bundle)
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(IncomingEvent::SessionBundleFetched { contact_id, bundle });
             });
         }
 
         // These are handled internally by the Orchestrator itself.
         Action::DecryptMessage { .. }
         | Action::EncryptMessage { .. }
-        | Action::ApplyPQContribution { .. }
         | Action::ArchiveSession { .. } => {}
 
         // ── Decrypted message ready ─────────────────────────────────────────
@@ -630,222 +556,16 @@ async fn dispatch(
             // Calls not yet implemented in TUI.
         }
 
-        Action::EndSessionSuppressed { .. } | Action::MessageQueuedPendingInit { .. } => {}
-
-        // ── Session healing ─────────────────────────────────────────────────
-        Action::SessionHealNeeded { contact_id, role } => {
-            // Dedup: if InitSession already succeeded for this contact in the
-            // same dispatch cycle, the heal is stale — skip it.
-            if session_inited.contains(&contact_id) {
-                tracing::debug!(
-                    target: "orchestrator_task",
-                    contact_id = %contact_id,
-                    role = %role,
-                    "SessionHealNeeded suppressed — InitSession already succeeded this cycle"
-                );
-                return;
-            }
-            tracing::warn!(
-                target: "orchestrator_task",
-                contact_id = %contact_id,
-                role = %role,
-                "Session heal needed — will overwrite current session"
-            );
-
-            if role == "Initiator" {
-                // ── TUI wins the tie-break (higher userId) ──────────────────
-                // Notify the peer to reset its conflicting INITIATOR session,
-                // then re-initialize our own session with fresh ephemeral keys.
-                // After re-init the session ping (msgNum=0) will let the peer
-                // establish itself as RESPONDER.
-                let end_sess = build_control_envelope(
-                    my_user_id,
-                    my_device_id,
-                    &contact_id,
-                    ContentType::SessionReset,
-                    vec![0u8; 16],
-                    uuid_v4(),
-                );
-                let _ = stream_tx.try_send(StreamCmd::Send(Box::new(end_sess)));
-
-                // Re-fetch bundle and re-init INITIATOR session.
-                match fetch_bundle_json(grpc, &contact_id).await {
-                    Ok(bundle_json) => {
-                        if let Err(e) =
-                            init_initiator_from_json(orchestrator, &contact_id, &bundle_json)
-                        {
-                            tracing::error!(
-                                target: "orchestrator_task",
-                                contact_id = %contact_id,
-                                error = %e,
-                                "Heal (Initiator): init_session_with_bundle failed"
-                            );
-                            return;
-                        }
-                        follow_ups.push(IncomingEvent::SessionInitCompleted {
-                            contact_id: contact_id.clone(),
-                            session_data: vec![],
-                        });
-                        // KNST session-ping occupies msgNum=0 so user text is not the
-                        // X3DH carrier. Type is byte 5 (25); envelope stays generic.
-                        let ping_id = uuid_v4();
-                        follow_ups.push(IncomingEvent::OutgoingMessage {
-                            contact_id: contact_id.clone(),
-                            message_id: ping_id.clone(),
-                            plaintext: crate::knst::encode_session_ping(&ping_id),
-                            content_type: 0,
-                        });
-                    }
-                    Err(e) => tracing::error!(
-                        target: "orchestrator_task",
-                        contact_id = %contact_id,
-                        error = %e,
-                        "Heal (Initiator): bundle fetch failed"
-                    ),
-                }
-            } else {
-                // ── TUI loses the tie-break (lower userId = Responder) ───────
-                // The peer's msgNum=0 is queued in the Rust healing_queue.
-                // Fetch the peer's bundle and initialize the RESPONDER session
-                // using the queued wire payload.
-                let wire_payload = orchestrator.take_heal_payload(&contact_id);
-                match wire_payload {
-                    None => tracing::error!(
-                        target: "orchestrator_task",
-                        contact_id = %contact_id,
-                        "Heal (Responder): no queued wire payload — cannot heal"
-                    ),
-                    Some(wire) => {
-                        match fetch_bundle_json(grpc, &contact_id).await {
-                            Ok(bundle_json) => {
-                                match orchestrator.init_receiving_session_from_wire_payload(
-                                    &contact_id,
-                                    bundle_json.as_bytes(),
-                                    &wire,
-                                ) {
-                                    Ok((_, first_plaintext)) => {
-                                        tracing::info!(
-                                            target: "orchestrator_task",
-                                            contact_id = %contact_id,
-                                            "Heal (Responder): session established"
-                                        );
-                                        // Consume init message so drain_pending won't re-decrypt it.
-                                        let first_message_id = orchestrator
-                                            .pop_first_pending(&contact_id)
-                                            .unwrap_or_else(uuid_v4);
-                                        // Surface the first message if it is real user content.
-                                        let first_text = crate::knst::decode_text(&first_plaintext);
-                                        if !first_text.is_empty()
-                                            && !first_text.starts_with('\0')
-                                            && !first_text.contains("__session_ping_")
-                                            && !first_text.contains("__heartbeat__")
-                                        {
-                                            let now_ms = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_millis()
-                                                as i64;
-                                            tracing::info!(
-                                                target: "orchestrator_task",
-                                                contact_id = %contact_id,
-                                                message_id = %first_message_id,
-                                                text_preview = %first_text.chars().take(40).collect::<String>(),
-                                                "Heal (Responder): surfacing first message"
-                                            );
-                                            persist_inbound(
-                                                storage,
-                                                cursor,
-                                                &first_message_id,
-                                                crate::storage::StoredMessage {
-                                                    id: first_message_id.clone(),
-                                                    peer_id: contact_id.clone(),
-                                                    text: first_text.clone(),
-                                                    direction: "received".into(),
-                                                    timestamp_ms: now_ms,
-                                                    delivery_status: String::new(),
-                                                },
-                                            );
-                                            let _ = internal_tx.send(
-                                                crate::app::InternalEventProxy::Bridge(
-                                                    BridgeEvent::NewMessage {
-                                                        peer_id: contact_id.clone(),
-                                                        message_id: first_message_id,
-                                                        text: first_text,
-                                                        timestamp_ms: now_ms,
-                                                    },
-                                                ),
-                                            );
-                                        }
-                                        follow_ups.push(IncomingEvent::SessionInitCompleted {
-                                            contact_id: contact_id.clone(),
-                                            session_data: vec![],
-                                        });
-                                    }
-                                    Err(e) => {
-                                        // Crypto failed — notify peer to start fresh.
-                                        tracing::warn!(
-                                            target: "orchestrator_task",
-                                            contact_id = %contact_id,
-                                            error = %e,
-                                            "Heal (Responder): init_receiving_session failed — sending END_SESSION"
-                                        );
-                                        let end_sess = build_control_envelope(
-                                            my_user_id,
-                                            my_device_id,
-                                            &contact_id,
-                                            ContentType::SessionReset,
-                                            vec![0u8; 16],
-                                            uuid_v4(),
-                                        );
-                                        let _ =
-                                            stream_tx.try_send(StreamCmd::Send(Box::new(end_sess)));
-                                    }
-                                }
-                            }
-                            Err(e) => tracing::error!(
-                                target: "orchestrator_task",
-                                contact_id = %contact_id,
-                                error = %e,
-                                "Heal (Responder): bundle fetch failed"
-                            ),
-                        }
-                    }
-                }
-            }
-        }
-
-        Action::HealSuppressed {
-            contact_id: _,
-            retry_after_ms,
-        } => {
-            // Retry after the cooldown expires.
-            let tx = self_tx.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(retry_after_ms)).await;
-                let _ = tx.send(IncomingEvent::AppLaunched);
-            });
-        }
+        Action::MessageQueuedPendingInit { .. } => {}
 
         // ── Persistence ─────────────────────────────────────────────────────
-        Action::SaveSessionToSecureStore { key, data } => {
-            if let Err(e) = apply_secure_store_save(storage, &key, &data) {
-                tracing::warn!(
-                    target: "orchestrator_task",
-                    key = %key,
-                    error = %e,
-                    "SaveSessionToSecureStore failed"
-                );
+        Action::SaveToSecureStore { slot, data } => {
+            let key = secure_store_key(&slot);
+            if let Err(error) = apply_secure_store_save(storage, &key, data.as_ref()) {
+                tracing::error!(%key, %error, "secure store save failed");
             }
         }
-
-        Action::LoadSessionFromSecureStore { key } => {
-            let data = storage.secure_load(&key).ok().flatten();
-            follow_ups.push(IncomingEvent::SessionLoaded { key, data });
-        }
-
-        Action::PersistMessage { message_json } => {
-            let _ = storage.persist_record("msg", &message_json);
-        }
+        Action::DuplicateDropped { message_id } => cursor.commit(storage, &message_id),
 
         Action::PersistAck {
             message_id,
@@ -871,40 +591,22 @@ async fn dispatch(
         }
 
         // ── Network ─────────────────────────────────────────────────────────
-        Action::FetchPublicKeyBundle { user_id } => {
-            let tx = self_tx.clone();
-            let grpc = grpc.clone();
-            let uid = user_id.clone();
-            let ui = internal_tx.clone();
-            tokio::spawn(async move {
-                match fetch_bundle_json(&grpc, &uid).await {
-                    Ok(bundle_json) => {
-                        let _ = tx.send(IncomingEvent::KeyBundleFetched {
-                            user_id: uid,
-                            bundle_json,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            target: "orchestrator_task",
-                            user_id = %uid,
-                            error = %e,
-                            "GetPreKeyBundle failed"
-                        );
-                        let _ = ui.send(crate::app::InternalEventProxy::Bridge(
-                            BridgeEvent::Error(format!("[PREKEY_BUNDLE] {e:#}")),
-                        ));
-                    }
-                }
-            });
-        }
-
         Action::SendEncryptedMessage {
             to,
             payload,
             message_id,
             content_type,
         } => {
+            // Core addresses a device; the envelope still requires its account UUID.
+            // Until that mapping is retained, sending `to` as recipient.user_id
+            // would create an envelope addressed to the wrong identity space.
+            if uuid::Uuid::parse_str(&to).is_err() {
+                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
+                    BridgeEvent::Error("Device-to-account routing is not ready".into()),
+                ));
+                tracing::warn!(device_id = %to, %message_id, "encrypted send held: no account routing");
+                return;
+            }
             tracing::info!(
                 target: "orchestrator_task",
                 to = %to,
@@ -940,29 +642,33 @@ async fn dispatch(
             );
         }
 
-        Action::SendEndSession { contact_id } => {
-            // Build a control envelope with CONTENT_TYPE_SESSION_RESET.
+        Action::SendDecryptionError {
+            contact_id,
+            message_id,
+            payload,
+        } => {
+            if uuid::Uuid::parse_str(&contact_id).is_err() {
+                tracing::warn!(device_id = %contact_id, %message_id, "decryption error held: no account routing");
+                return;
+            }
             let envelope = build_control_envelope(
                 my_user_id,
                 my_device_id,
                 &contact_id,
-                ContentType::SessionReset,
-                vec![],
-                format!("end-session-{contact_id}"),
+                ContentType::DecryptionError,
+                payload,
+                message_id,
             );
             let _ = stream_tx.try_send(StreamCmd::Send(Box::new(envelope)));
         }
-
-        Action::SendHeartbeat { contact_id } => {
-            // Encrypted heartbeat — routed as OutgoingMessage with content_type = HEARTBEAT.
-            // Content-type 0 is a regular E2EE message; we use that with a special payload.
-            let message_id = uuid_v4();
-            let _ = self_tx.send(IncomingEvent::OutgoingMessage {
-                contact_id,
-                message_id,
-                plaintext: b"\x00HEARTBEAT\x00".to_vec(),
-                content_type: 0,
-            });
+        Action::SessionRetired { contact_id, .. } => {
+            session_established_at_ms.remove(&contact_id);
+        }
+        Action::ResendMessage {
+            contact_id,
+            message_id,
+        } => {
+            tracing::warn!(%contact_id, %message_id, "resend requires outgoing message lookup");
         }
 
         // ── UI notifications ─────────────────────────────────────────────────
@@ -1000,10 +706,6 @@ async fn dispatch(
             )));
         }
 
-        Action::NotifyLinkedDevicesOfSessionReset { .. } => {
-            // Multi-device not yet implemented in TUI.
-        }
-
         // ── Timers ──────────────────────────────────────────────────────────
         Action::ScheduleTimer { timer_id, delay_ms } => {
             let tx = self_tx.clone();
@@ -1019,26 +721,6 @@ async fn dispatch(
             if let Some(handle) = timers.remove(&timer_id) {
                 handle.abort();
             }
-        }
-
-        Action::SessionTerminated {
-            contact_id,
-            archive_bytes,
-        } => {
-            if let Err(e) = apply_session_terminated(storage, &contact_id, &archive_bytes) {
-                tracing::warn!(
-                    target: "orchestrator_task",
-                    contact_id = %contact_id,
-                    error = %e,
-                    "SessionTerminated storage update failed"
-                );
-            }
-            session_established_at_ms.remove(&contact_id);
-            tracing::info!(
-                target: "orchestrator_task",
-                contact_id = %contact_id,
-                "Session terminated"
-            );
         }
     }
 }
@@ -1061,46 +743,19 @@ fn apply_session_terminated(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// JSON payload for `Action::InitSession`. `X3DHPublicKeyBundle` has no Kyber
-/// key fields; they ride next to it so PQXDH encapsulate can run.
-#[derive(Debug, Serialize, Deserialize)]
-struct SessionInitBundle {
-    #[serde(flatten)]
-    x3dh: X3DHPublicKeyBundle,
-    #[serde(default)]
-    kyber_pre_key_public: Option<Vec<u8>>,
-    #[serde(default)]
-    kyber_one_time_prekey_public: Option<Vec<u8>>,
-    #[serde(default)]
-    kyber_one_time_prekey_id: Option<u32>,
+fn secure_store_key(slot: &construct_core::orchestration::actions::SecureStoreSlot) -> String {
+    use construct_core::orchestration::actions::SecureStoreSlot;
+    match slot {
+        SecureStoreSlot::Session { contact_id } => format!("session_{contact_id}"),
+        SecureStoreSlot::OrchestratorState => "construct.orchestrator_state".into(),
+    }
 }
 
-fn init_initiator_from_json(
-    orchestrator: &mut Orchestrator,
-    contact_id: &str,
-    bundle_json: &str,
-) -> Result<String, String> {
-    let bundle: SessionInitBundle = serde_json::from_str(bundle_json).map_err(|e| e.to_string())?;
-    orchestrator.init_session_with_bundle(
-        contact_id,
-        bundle.x3dh,
-        bundle.kyber_pre_key_public,
-        bundle.kyber_one_time_prekey_public,
-        bundle.kyber_one_time_prekey_id,
-        false,
-    )
-}
-
-/// Fetch a pre-key bundle from the gRPC key service and return it as
-/// the JSON string expected by `init_initiator_from_json`.
-async fn fetch_bundle_json(client: &GrpcClient, user_id: &str) -> Result<String> {
-    let fetched = crate::grpc::get_pre_key_bundle(client, user_id).await?;
-    Ok(serde_json::to_string(&SessionInitBundle {
-        x3dh: fetched.x3dh,
-        kyber_pre_key_public: fetched.kyber_pre_key,
-        kyber_one_time_prekey_public: fetched.kyber_one_time_prekey,
-        kyber_one_time_prekey_id: fetched.kyber_one_time_prekey_id,
-    })?)
+async fn fetch_bundle(
+    client: &GrpcClient,
+    user_id: &str,
+) -> Result<crate::grpc::FetchedPreKeyBundle> {
+    Ok(crate::grpc::get_pre_key_bundle(client, user_id).await?)
 }
 
 /// Before the Orchestrator sees an event:
@@ -1123,81 +778,6 @@ async fn prepare_outgoing(
     session_established_at_ms: &mut HashMap<String, u64>,
 ) -> Option<IncomingEvent> {
     match event {
-        IncomingEvent::ActiveChatChanged {
-            contact_id,
-            is_active: true,
-        } => {
-            let had_inbound = orchestrator.pending_message_count(&contact_id) > 0;
-            match establish_session(
-                orchestrator,
-                storage,
-                stream_tx,
-                internal_tx,
-                grpc,
-                cursor,
-                my_user_id,
-                my_device_id,
-                self_tx,
-                timers,
-                session_established_at_ms,
-                &contact_id,
-            )
-            .await
-            {
-                Ok(true) => {
-                    // New INITIATOR session — ping occupies msgNum=0 so the peer
-                    // can become RESPONDER before user text. Skip if we inited as
-                    // RESPONDER from a queued inbound (iOS sends ready, not ping).
-                    if !had_inbound {
-                        let ping_id = uuid_v4();
-                        let ping = IncomingEvent::OutgoingMessage {
-                            contact_id: contact_id.clone(),
-                            message_id: ping_id.clone(),
-                            plaintext: crate::knst::encode_session_ping(&ping_id),
-                            content_type: 0,
-                        };
-                        let actions = orchestrator.handle_event(ping);
-                        let mut follow_ups = Vec::new();
-                        let mut session_inited = std::collections::HashSet::new();
-                        for action in actions {
-                            dispatch(
-                                action,
-                                orchestrator,
-                                storage,
-                                stream_tx,
-                                internal_tx,
-                                grpc,
-                                cursor,
-                                my_user_id,
-                                my_device_id,
-                                self_tx,
-                                timers,
-                                &mut follow_ups,
-                                &mut session_inited,
-                                session_established_at_ms,
-                            )
-                            .await;
-                        }
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::error!(
-                        target: "orchestrator_task",
-                        contact_id = %contact_id,
-                        error = %e,
-                        "proactive session init failed"
-                    );
-                    let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                        BridgeEvent::Error(format!("[SESSION_INIT_FAILED] {e}")),
-                    ));
-                }
-            }
-            Some(IncomingEvent::ActiveChatChanged {
-                contact_id,
-                is_active: true,
-            })
-        }
         IncomingEvent::OutgoingMessage {
             contact_id,
             message_id,
@@ -1229,6 +809,12 @@ async fn prepare_outgoing(
                 );
                 let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
                     BridgeEvent::Error(format!("[SESSION_INIT_FAILED] {e}")),
+                ));
+                return None;
+            }
+            if !orchestrator.has_active_session(&contact_id) {
+                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
+                    BridgeEvent::Error("Device routing is required before sending".into()),
                 ));
                 return None;
             }
@@ -1268,12 +854,23 @@ async fn establish_session(
     if orchestrator.has_active_session(contact_id) {
         return Ok(false);
     }
-    let bundle_json = fetch_bundle_json(grpc, contact_id)
+    let fetched = fetch_bundle(grpc, contact_id)
         .await
         .map_err(|e| format!("GetPreKeyBundle: {e:#}"))?;
-    let actions = orchestrator.handle_event(IncomingEvent::KeyBundleFetched {
-        user_id: contact_id.to_string(),
-        bundle_json,
+    let device_id = fetched.device_id;
+    if device_id.is_empty() {
+        return Err("prekey bundle did not identify a device".into());
+    }
+    orchestrator.init_session_with_bundle(
+        &device_id,
+        fetched.bundle.x3dh,
+        fetched.bundle.kyber,
+        false,
+    )?;
+    session_established_at_ms.insert(device_id.clone(), now_ms_u64());
+    let actions = orchestrator.handle_event(IncomingEvent::SessionInitCompleted {
+        contact_id: device_id.clone(),
+        session_data: vec![],
     });
     let mut follow_ups = Vec::new();
     let mut session_inited = std::collections::HashSet::new();
@@ -1318,10 +915,10 @@ async fn establish_session(
             .await;
         }
     }
-    if orchestrator.has_active_session(contact_id) {
+    if orchestrator.has_active_session(&device_id) {
         Ok(true)
     } else {
-        Err("no session after InitSession".into())
+        Err("no session after init".into())
     }
 }
 
@@ -1560,6 +1157,7 @@ mod tests {
     #[tokio::test]
     async fn stream_message_command_terminally_drops_stale_msg_zero() {
         let mut harness = ReplayHarness::new();
+        harness.remember_contact("bob");
         harness.mark_session_established("bob", 2_000);
 
         harness
@@ -1581,6 +1179,7 @@ mod tests {
     #[tokio::test]
     async fn stream_message_command_terminally_drops_stale_reset_with_invalid_wire_payload() {
         let mut harness = ReplayHarness::new();
+        harness.remember_contact("bob");
         harness.mark_session_established("bob", 2_000);
 
         harness
@@ -1605,6 +1204,26 @@ mod tests {
         assert!(harness.stream_rx.try_recv().is_err());
     }
 
+    #[tokio::test]
+    async fn stream_message_command_drops_unknown_contact_before_core_pending_queue() {
+        let mut harness = ReplayHarness::new();
+
+        harness
+            .handle_stream_message(stale_message_command("bob", "unknown-msg0", 0, 0, false))
+            .await;
+
+        assert_eq!(
+            harness.storage.load_stream_cursor().unwrap().as_deref(),
+            Some("1000-0")
+        );
+        assert_eq!(
+            harness.orchestrator.pending_message_count("bob"),
+            0,
+            "unknown contact backlog must not force a later re-add down RESPONDER path"
+        );
+        assert!(harness.stream_rx.try_recv().is_err());
+    }
+
     fn stream_context(
         contact_id: &str,
         content_type: u8,
@@ -1625,7 +1244,7 @@ mod tests {
         message_id: &str,
         content_type: u8,
         msg_num: u32,
-        is_control: bool,
+        _is_control: bool,
     ) -> OrchestratorCommand {
         OrchestratorCommand::StreamMessage {
             event: IncomingEvent::MessageReceived {
@@ -1635,7 +1254,7 @@ mod tests {
                 msg_num,
                 kem_ct: Vec::new(),
                 otpk_id: 0,
-                is_control,
+                sender_certificate: None,
                 content_type,
             },
             context: StreamMessageContext {
@@ -1659,6 +1278,7 @@ mod tests {
         self_tx: tokio::sync::mpsc::UnboundedSender<IncomingEvent>,
         timers: HashMap<String, AbortHandle>,
         session_established_at_ms: HashMap<String, u64>,
+        known_contacts: HashSet<String>,
     }
 
     impl ReplayHarness {
@@ -1683,7 +1303,12 @@ mod tests {
                 self_tx,
                 timers: HashMap::new(),
                 session_established_at_ms: HashMap::new(),
+                known_contacts: HashSet::new(),
             }
+        }
+
+        fn remember_contact(&mut self, contact_id: &str) {
+            self.known_contacts.insert(contact_id.to_string());
         }
 
         fn mark_session_established(&mut self, contact_id: &str, established_at_ms: u64) {
@@ -1705,6 +1330,7 @@ mod tests {
                 &self.self_tx,
                 &mut self.timers,
                 &mut self.session_established_at_ms,
+                &mut self.known_contacts,
             )
             .await;
         }

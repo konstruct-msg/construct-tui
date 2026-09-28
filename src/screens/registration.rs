@@ -1,7 +1,8 @@
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -11,7 +12,7 @@ pub const STEPS: &[&str] = &[
     "Generating identity key (X25519)",
     "Generating signed pre-key (X25519)",
     "Signing pre-key",
-    "Connecting to Construct",
+    "Connecting to Konstruct",
     "Solving proof-of-work",
     "Registering identity",
 ];
@@ -21,6 +22,7 @@ pub const STEPS: &[&str] = &[
 const SPINNER: &[&str] = &["·", "·", "·", "·", "·", " ", " ", " ", " ", " "];
 
 pub struct RegistrationScreen {
+    pub theme: ThemeMode,
     /// How many steps have been *started* (index of the currently active step).
     /// `active_step == STEPS.len()` means all steps are complete.
     pub active_step: usize,
@@ -31,6 +33,7 @@ pub struct RegistrationScreen {
 impl RegistrationScreen {
     pub fn new() -> Self {
         Self {
+            theme: ThemeMode::default(),
             active_step: 0,
             spinner_tick: 0,
         }
@@ -49,6 +52,7 @@ impl RegistrationScreen {
 
 impl Widget for &RegistrationScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let palette = self.theme.palette();
         // Height: title(1) + gap(1) + steps(N) + gap(1) + hint(1)
         let n = STEPS.len() as u16;
         let content_h = 1 + 1 + n + 1 + 1;
@@ -59,21 +63,15 @@ impl Widget for &RegistrationScreen {
         let title = "INITIALIZING IDENTITY";
         let tw = title.chars().count() as u16;
         let tx = area.x + area.width.saturating_sub(tw) / 2;
-        Paragraph::new(title)
-            .style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .render(
-                Rect {
-                    x: tx,
-                    y,
-                    width: tw.min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(title).style(palette.emphasis()).render(
+            Rect {
+                x: tx,
+                y,
+                width: tw.min(area.width),
+                height: 1,
+            },
+            buf,
+        );
         y += 2;
 
         // ── Step list ─────────────────────────────────────────────────────────
@@ -86,20 +84,15 @@ impl Widget for &RegistrationScreen {
             let frame = SPINNER[(self.spinner_tick as usize) % SPINNER.len()];
             let (prefix, prefix_color, label_color): (String, Color, Color) =
                 if i < self.active_step {
-                    ("[✓]".into(), Color::Green, Color::DarkGray)
+                    ("[✓]".into(), palette.success, palette.muted)
                 } else if i == self.active_step {
-                    (format!("[{frame}]"), Color::Cyan, Color::White)
+                    (format!("[{frame}]"), palette.accent, palette.foreground)
                 } else {
-                    ("[ ]".into(), Color::DarkGray, Color::DarkGray)
+                    ("[ ]".into(), palette.muted, palette.muted)
                 };
 
             let line = Line::from(vec![
-                Span::styled(
-                    format!("{prefix} "),
-                    Style::default()
-                        .fg(prefix_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(format!("{prefix} "), Style::default().fg(prefix_color)),
                 Span::styled(*label, Style::default().fg(label_color)),
             ]);
 
@@ -120,16 +113,14 @@ impl Widget for &RegistrationScreen {
         let hint = "Ctrl+C to abort";
         let hw = hint.len() as u16;
         let hx = area.x + area.width.saturating_sub(hw) / 2;
-        Paragraph::new(hint)
-            .style(Style::default().fg(Color::DarkGray))
-            .render(
-                Rect {
-                    x: hx,
-                    y,
-                    width: hw.min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(hint).style(palette.muted()).render(
+            Rect {
+                x: hx,
+                y,
+                width: hw.min(area.width),
+                height: 1,
+            },
+            buf,
+        );
     }
 }

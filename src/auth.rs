@@ -123,13 +123,16 @@ pub async fn register_new_device(
     sleep(Duration::from_millis(MIN_STEP_MS)).await;
 
     // 4. Build CFE-encoded private keys blob
-    use construct_core::cfe::{CfePrivateKeysV1, encode};
+    use construct_core::{
+        cfe::{CfePrivateKeysV1, encode},
+        crypto::SecretBytes,
+    };
     use serde_bytes::ByteBuf;
     let private_keys = CfePrivateKeysV1 {
         suite_id: 1, // CLASSIC
-        ik_priv: ByteBuf::from((*identity_pair.private_key).to_vec()),
-        sk_priv: ByteBuf::from((*signing_pair.private_key).to_vec()),
-        spk_priv: ByteBuf::from((*spk_pair.private_key).to_vec()),
+        ik_priv: SecretBytes::from_slice(&identity_pair.private_key[..]),
+        sk_priv: SecretBytes::from_slice(&signing_pair.private_key[..]),
+        spk_priv: SecretBytes::from_slice(&spk_pair.private_key[..]),
         spk_sig: ByteBuf::from(spk_sig.to_bytes().to_vec()),
         spk_id: 0,
         ik_pub: ByteBuf::from(identity_pair.public_key.to_vec()),
@@ -137,7 +140,6 @@ pub async fn register_new_device(
         spk_pub: ByteBuf::from(spk_pair.public_key.to_vec()),
         old_spks: vec![],
         hybrid_sig_priv: None,
-        kyber_spk: None,
     };
     let keys_cfe_data = encode(
         construct_core::cfe::CfeMessageType::PrivateKeys,
@@ -232,13 +234,16 @@ pub async fn link_existing_device(client: &GrpcClient, link_token: &str) -> Resu
     let spk_sig = sk.sign(&spk_msg);
 
     // Build CFE-encoded private keys
-    use construct_core::cfe::{CfePrivateKeysV1, encode};
+    use construct_core::{
+        cfe::{CfePrivateKeysV1, encode},
+        crypto::SecretBytes,
+    };
     use serde_bytes::ByteBuf;
     let private_keys = CfePrivateKeysV1 {
         suite_id: 1, // CLASSIC
-        ik_priv: ByteBuf::from((*identity_pair.private_key).to_vec()),
-        sk_priv: ByteBuf::from((*signing_pair.private_key).to_vec()),
-        spk_priv: ByteBuf::from((*spk_pair.private_key).to_vec()),
+        ik_priv: SecretBytes::from_slice(&identity_pair.private_key[..]),
+        sk_priv: SecretBytes::from_slice(&signing_pair.private_key[..]),
+        spk_priv: SecretBytes::from_slice(&spk_pair.private_key[..]),
         spk_sig: ByteBuf::from(spk_sig.to_bytes().to_vec()),
         spk_id: 0,
         ik_pub: ByteBuf::from(identity_pair.public_key.to_vec()),
@@ -246,7 +251,6 @@ pub async fn link_existing_device(client: &GrpcClient, link_token: &str) -> Resu
         spk_pub: ByteBuf::from(spk_pair.public_key.to_vec()),
         old_spks: vec![],
         hybrid_sig_priv: None,
-        kyber_spk: None,
     };
     let keys_cfe_data = encode(
         construct_core::cfe::CfeMessageType::PrivateKeys,

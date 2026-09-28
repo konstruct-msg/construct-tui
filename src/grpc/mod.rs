@@ -29,6 +29,6 @@ pub use auth::{
 };
 pub use client::GrpcClient;
 pub use invite::accept_invite;
-pub use keys::{get_pre_key_bundle, upload_pre_keys};
+pub use keys::{FetchedPreKeyBundle, get_pre_key_bundle, upload_pre_keys};
 pub use stream::open_message_stream;
 pub use users::find_user;

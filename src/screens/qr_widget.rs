@@ -7,6 +7,7 @@
 //! Rendering includes a mandatory 2-cell quiet zone (white border) so scanners
 //! work reliably. Total size for a typical ~25-module QR ≈ 15 rows × 29 chars.
 
+use crate::theme::ThemeMode;
 use qrcode::{EcLevel, QrCode};
 use ratatui::{
     buffer::Buffer,
@@ -19,24 +20,31 @@ use ratatui::{
 const QUIET: usize = 2; // quiet-zone cells on each side
 
 pub struct QrWidget<'a> {
+    pub theme: ThemeMode,
     /// The data to encode (URL, token, username handle, …)
     pub data: &'a str,
     /// Optional caption rendered below the QR
     pub caption: Option<&'a str>,
-    /// Foreground (dark modules). Defaults to White.
+    /// Foreground (dark modules). Always high contrast by default.
     pub fg: Color,
-    /// Background (light modules). Defaults to Black (terminal bg).
+    /// Background (light modules). Includes the QR quiet zone.
     pub bg: Color,
 }
 
 impl<'a> QrWidget<'a> {
     pub fn new(data: &'a str) -> Self {
         Self {
+            theme: ThemeMode::default(),
             data,
             caption: None,
-            fg: Color::White,
-            bg: Color::Reset,
+            fg: Color::Black,
+            bg: Color::White,
         }
+    }
+
+    pub fn theme(mut self, theme: ThemeMode) -> Self {
+        self.theme = theme;
+        self
     }
 
     pub fn caption(mut self, caption: &'a str) -> Self {
@@ -57,6 +65,7 @@ impl<'a> QrWidget<'a> {
 
 impl Widget for &QrWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let palette = self.theme.palette();
         let code = match QrCode::with_error_correction_level(self.data, EcLevel::M) {
             Ok(c) => c,
             Err(_) => {
@@ -64,17 +73,15 @@ impl Widget for &QrWidget<'_> {
                 let msg = "[ QR unavailable ]";
                 let x = area.x + area.width.saturating_sub(msg.len() as u16) / 2;
                 if area.height > 0 {
-                    Paragraph::new(msg)
-                        .style(Style::default().fg(Color::DarkGray))
-                        .render(
-                            Rect {
-                                x,
-                                y: area.y,
-                                width: msg.len() as u16,
-                                height: 1,
-                            },
-                            buf,
-                        );
+                    Paragraph::new(msg).style(palette.muted()).render(
+                        Rect {
+                            x,
+                            y: area.y,
+                            width: msg.len() as u16,
+                            height: 1,
+                        },
+                        buf,
+                    );
                 }
                 return;
             }
@@ -122,10 +129,7 @@ impl Widget for &QrWidget<'_> {
 
         // Optional caption
         if let Some(cap) = self.caption {
-            lines.push(Line::from(Span::styled(
-                cap,
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled(cap, palette.muted())));
         }
 
         // Centre within the allocated area

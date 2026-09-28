@@ -2,6 +2,7 @@
 
 use construct_core::crypto::SuiteID;
 use construct_core::crypto::handshake::x3dh::X3DHPublicKeyBundle;
+use construct_core::orchestration::orchestrator::{KyberBundleKeys, SessionBundle};
 use prost::Message;
 
 use crate::proto::core::v1::CryptoSuite;
@@ -14,15 +15,9 @@ use super::client::GrpcClient;
 use super::error::GrpcError;
 use super::paths;
 
-/// Pre-key bundle plus the Kyber keys that `X3DHPublicKeyBundle` does not carry.
-///
-/// `init_session_with_bundle` takes Kyber SPK / OTPK as separate arguments; they
-/// must survive the JSON hop through `Action::InitSession`.
 pub struct FetchedPreKeyBundle {
-    pub x3dh: X3DHPublicKeyBundle,
-    pub kyber_pre_key: Option<Vec<u8>>,
-    pub kyber_one_time_prekey: Option<Vec<u8>>,
-    pub kyber_one_time_prekey_id: Option<u32>,
+    pub bundle: SessionBundle,
+    pub device_id: String,
 }
 
 pub async fn get_pre_key_bundle(
@@ -39,22 +34,44 @@ pub async fn get_pre_key_bundle(
         .await?;
     let resp = GetPreKeyBundleResponse::decode(bytes.as_slice())
         .map_err(|e| GrpcError::transport(format!("GetPreKeyBundle decode: {e}")))?;
-    let (kyber_pre_key, kyber_one_time_prekey, kyber_one_time_prekey_id) = resp
+    let b = resp
         .bundle
         .as_ref()
-        .map(|b| {
-            (
-                b.kyber_pre_key.as_ref().map(|k| k.to_vec()),
-                b.kyber_one_time_pre_key.as_ref().map(|k| k.to_vec()),
-                b.kyber_one_time_pre_key_id,
-            )
-        })
-        .unwrap_or((None, None, None));
+        .ok_or_else(|| GrpcError::transport("no bundle in response"))?;
+    let kyber = KyberBundleKeys {
+        pre_key_id: b.kyber_pre_key_id,
+        pre_key_public: b.kyber_pre_key.as_ref().map(|v| v.to_vec()),
+        pre_key_created_at: b.kyber_pre_key_created_at,
+        pre_key_signature: b.kyber_pre_key_signature.as_ref().map(|v| v.to_vec()),
+        pre_key_hybrid_signature: b
+            .kyber_pre_key_hybrid_signature
+            .as_ref()
+            .map(|v| v.to_vec()),
+        one_time_prekey_id: b.kyber_one_time_pre_key_id,
+        one_time_prekey_public: b.kyber_one_time_pre_key.as_ref().map(|v| v.to_vec()),
+        one_time_prekey_created_at: b.kyber_one_time_pre_key_created_at,
+        one_time_prekey_signature: b
+            .kyber_one_time_pre_key_signature
+            .as_ref()
+            .map(|v| v.to_vec()),
+        one_time_prekey_hybrid_signature: b
+            .kyber_one_time_pre_key_hybrid_signature
+            .as_ref()
+            .map(|v| v.to_vec()),
+        hybrid_identity_key: b.hybrid_identity_key.as_ref().map(|v| v.to_vec()),
+        hybrid_identity_signature: b.hybrid_identity_signature.as_ref().map(|v| v.to_vec()),
+    };
+    let device_id = resp.device_id.clone();
+    let x3dh = bundle_to_x3dh(resp)?;
+    let derived_device_id = construct_core::device_id::derive_device_id(&x3dh.identity_public);
+    if device_id != derived_device_id {
+        return Err(GrpcError::transport(
+            "prekey bundle device ID does not match identity key",
+        ));
+    }
     Ok(FetchedPreKeyBundle {
-        x3dh: bundle_to_x3dh(resp)?,
-        kyber_pre_key,
-        kyber_one_time_prekey,
-        kyber_one_time_prekey_id,
+        bundle: SessionBundle { x3dh, kyber },
+        device_id,
     })
 }
 
@@ -109,6 +126,5 @@ fn bundle_to_x3dh(resp: GetPreKeyBundleResponse) -> Result<X3DHPublicKeyBundle, 
         spk_rotation_epoch: bundle.spk_rotation_epoch,
         kyber_spk_uploaded_at: bundle.kyber_spk_uploaded_at.unwrap_or(0) as u64,
         kyber_spk_rotation_epoch: bundle.kyber_spk_rotation_epoch.unwrap_or(0),
-        supports_pq_ratchet: false,
     })
 }

@@ -10,12 +10,13 @@
 
 use sha2::{Digest, Sha512};
 
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 /// Compute the safety number for a pair of identity keys.
@@ -50,6 +51,7 @@ pub fn compute_safety_number(our_identity: &[u8; 32], their_identity: &[u8; 32])
 
 /// Safety number verification overlay.
 pub struct SafetyNumberScreen {
+    pub theme: ThemeMode,
     pub contact_name: String,
     pub number: String,
 }
@@ -61,6 +63,7 @@ impl SafetyNumberScreen {
         their_identity: &[u8; 32],
     ) -> Self {
         Self {
+            theme: ThemeMode::default(),
             contact_name: contact_name.into(),
             number: compute_safety_number(our_identity, their_identity),
         }
@@ -75,18 +78,16 @@ impl SafetyNumberScreen {
 
 impl Widget for &SafetyNumberScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let outer = Block::default()
-            .title(format!(" ◆ Safety Number — {} ", self.contact_name))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
+        let palette = self.theme.palette();
+        let outer = palette.panel(format!(" Safety number — {} ", self.contact_name), true);
 
         let inner = outer.inner(area);
         outer.render(area, buf);
 
         let mut lines = vec![
             Line::from(Span::styled(
-                "  Compare this number with your contact out-of-band.",
-                Style::default().fg(Color::DarkGray),
+                "  Compare this number with the other person.",
+                palette.muted(),
             )),
             Line::from(Span::raw("")),
         ];
@@ -95,18 +96,17 @@ impl Widget for &SafetyNumberScreen {
             lines.push(Line::from(Span::styled(
                 format!("    {}", row),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(palette.warning)
                     .add_modifier(Modifier::BOLD),
             )));
         }
 
         lines.push(Line::from(Span::raw("")));
-        lines.push(Line::from(Span::styled(
-            "  [Esc] Back",
-            Style::default().fg(Color::DarkGray),
-        )));
+        lines.push(Line::from(Span::styled("  [Esc] Back", palette.muted())));
 
-        Paragraph::new(lines).render(inner, buf);
+        Paragraph::new(lines)
+            .style(palette.surface())
+            .render(inner, buf);
     }
 }
 

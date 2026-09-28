@@ -3,12 +3,13 @@
 //! Lets the user search for other nodes by username and send a contact request.
 //! When connected, this triggers gRPC SearchUsers + AddContact RPCs.
 
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
+    widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
 };
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub struct SearchResult {
 
 /// State for the contact search / add screen.
 pub struct ContactSearchScreen {
+    pub theme: ThemeMode,
     /// Current text in the search box.
     pub query: String,
     /// Results from the last search RPC (empty until user searches).
@@ -35,6 +37,7 @@ pub struct ContactSearchScreen {
 impl ContactSearchScreen {
     pub fn new() -> Self {
         Self {
+            theme: ThemeMode::default(),
             query: String::new(),
             results: Vec::new(),
             status: None,
@@ -107,10 +110,8 @@ impl ContactSearchScreen {
 
 impl Widget for &mut ContactSearchScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let outer = Block::default()
-            .title(" ◆ Add Node ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+        let palette = self.theme.palette();
+        let outer = palette.panel(" Add a person ", true);
 
         let inner = outer.inner(area);
         outer.render(area, buf);
@@ -126,12 +127,12 @@ impl Widget for &mut ContactSearchScreen {
         // Hint
         Paragraph::new(Line::from(Span::styled(
             "  name or paste invite link  Enter  Esc=back",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette.muted),
         )))
         .render(chunks[0], buf);
 
         // Search input
-        let input_style = Style::default().fg(Color::White);
+        let input_style = palette.surface();
         let input_text = if self.searching {
             format!("  {}  ⠋", self.query)
         } else {
@@ -139,20 +140,15 @@ impl Widget for &mut ContactSearchScreen {
         };
         Paragraph::new(input_text)
             .style(input_style)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title(" Search "),
-            )
+            .block(palette.panel(" Search ", true))
             .render(chunks[1], buf);
 
         // Status
         if let Some(ref msg) = self.status {
             let color = if self.is_error {
-                Color::Red
+                palette.danger
             } else {
-                Color::Green
+                palette.success
             };
             Paragraph::new(Line::from(Span::styled(
                 format!("  {}", msg),
@@ -169,24 +165,21 @@ impl Widget for &mut ContactSearchScreen {
                 let name = Span::styled(
                     format!("  @{}", r.username),
                     Style::default()
-                        .fg(Color::White)
+                        .fg(palette.foreground)
                         .add_modifier(Modifier::BOLD),
                 );
                 let uid = Span::styled(
                     format!("  {}", &r.user_id[..8.min(r.user_id.len())]),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(palette.muted),
                 );
                 ListItem::new(vec![Line::from(vec![name, uid])])
             })
             .collect();
 
         let list = List::new(items)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ");
+            .style(palette.surface())
+            .highlight_style(palette.selected().add_modifier(Modifier::BOLD))
+            .highlight_symbol("▸ ");
 
         let mut state = self.state;
         StatefulWidget::render(list, chunks[3], buf, &mut state);

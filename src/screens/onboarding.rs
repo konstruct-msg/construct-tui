@@ -1,8 +1,9 @@
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Widget},
+    style::Modifier,
+    widgets::{Paragraph, Widget},
 };
 
 /// Full-width banner for terminals ≥ 82 columns. `.chars().count()` = 78.
@@ -33,6 +34,7 @@ pub enum OnboardingField {
 }
 
 pub struct OnboardingScreen {
+    pub theme: ThemeMode,
     pub username: String,
     pub focused_field: OnboardingField,
     pub status: Option<String>,
@@ -42,6 +44,7 @@ pub struct OnboardingScreen {
 impl OnboardingScreen {
     pub fn new() -> Self {
         Self {
+            theme: ThemeMode::default(),
             username: String::new(),
             focused_field: OnboardingField::Username,
             status: None,
@@ -68,6 +71,7 @@ impl OnboardingScreen {
 
 impl Widget for &OnboardingScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let palette = self.theme.palette();
         // Pick banner based on terminal width. Use char count, not byte length.
         let use_full = area.width >= 80;
         let banner = if use_full { BANNER } else { BANNER_NARROW };
@@ -84,11 +88,7 @@ impl Widget for &OnboardingScreen {
         for (i, row) in banner.iter().enumerate() {
             let row_w = row.chars().count() as u16;
             Paragraph::new(*row)
-                .style(
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .style(palette.text().add_modifier(Modifier::BOLD))
                 .render(
                     Rect {
                         x: banner_x,
@@ -105,17 +105,15 @@ impl Widget for &OnboardingScreen {
         // ── Tagline ───────────────────────────────────────────────────────────
         let tag_w = TAGLINE.chars().count() as u16;
         let tag_x = area.x + area.width.saturating_sub(tag_w) / 2;
-        Paragraph::new(TAGLINE)
-            .style(Style::default().fg(Color::DarkGray))
-            .render(
-                Rect {
-                    x: tag_x,
-                    y,
-                    width: tag_w.min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(TAGLINE).style(palette.muted()).render(
+            Rect {
+                x: tag_x,
+                y,
+                width: tag_w.min(area.width),
+                height: 1,
+            },
+            buf,
+        );
         y += 2;
 
         // ── Username field ────────────────────────────────────────────────────
@@ -124,13 +122,8 @@ impl Widget for &OnboardingScreen {
 
         let user_text = format!("{}_", self.username);
         Paragraph::new(user_text)
-            .block(
-                Block::default()
-                    .title(" Username / Display name ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            )
-            .style(Style::default().fg(Color::White))
+            .block(palette.panel(" Username / Display name ", true))
+            .style(palette.surface())
             .render(
                 Rect {
                     x: field_x,
@@ -144,15 +137,10 @@ impl Widget for &OnboardingScreen {
 
         // ── Status line ───────────────────────────────────────────────────────
         if let Some(ref msg) = self.status {
-            let color = if self.is_error {
-                Color::Red
-            } else {
-                Color::Green
-            };
             let msg_w = msg.chars().count() as u16;
             let sx = area.x + area.width.saturating_sub(msg_w) / 2;
             Paragraph::new(msg.as_str())
-                .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+                .style(palette.state(self.is_error))
                 .render(
                     Rect {
                         x: sx,
@@ -169,16 +157,14 @@ impl Widget for &OnboardingScreen {
         let hint = "Enter=register (username optional)   Tab=link existing device   q=quit";
         let hint_w = hint.len() as u16; // all ASCII
         let hx = area.x + area.width.saturating_sub(hint_w) / 2;
-        Paragraph::new(hint)
-            .style(Style::default().fg(Color::DarkGray))
-            .render(
-                Rect {
-                    x: hx,
-                    y,
-                    width: hint_w.min(area.width),
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new(hint).style(palette.muted()).render(
+            Rect {
+                x: hx,
+                y,
+                width: hint_w.min(area.width),
+                height: 1,
+            },
+            buf,
+        );
     }
 }

@@ -25,6 +25,7 @@ use crate::{
         StatusBar, UnlockMode, UnlockScreen, chat_list::Contact, contact_search::SearchResult,
         qr_widget::QrWidget,
     },
+    theme::ThemeMode,
     tui::Tui,
 };
 
@@ -126,6 +127,7 @@ pub struct AppConfig {
     #[allow(dead_code)]
     pub headless: bool,
     pub pq_active: bool,
+    pub theme: ThemeMode,
 }
 
 pub struct App {
@@ -161,6 +163,7 @@ pub struct App {
     user_id: String,
     /// Whether Kyber-768 PQXDH is active for this session.
     pq_active: bool,
+    theme: ThemeMode,
     /// Live connection state shown in the status bar.
     connection: ConnectionState,
     settings_screen: SettingsScreen,
@@ -227,6 +230,7 @@ impl App {
             transport: cfg.transport,
             user_id: String::new(),
             pq_active: cfg.pq_active,
+            theme: cfg.theme,
             connection: ConnectionState::default(),
             settings_screen,
             contact_search: ContactSearchScreen::new(),
@@ -747,35 +751,15 @@ impl App {
             ),
         }
         for contact_id in &contact_ids {
-            for key in [
-                format!("archive_{contact_id}"),
-                format!("session_{contact_id}"),
-            ] {
-                let data = match read_storage.secure_load(&key) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        tracing::warn!(
-                            contact_id = %contact_id,
-                            key = %key,
-                            error = %e,
-                            "failed to load persisted session material"
-                        );
-                        None
+            let key = format!("session_{contact_id}");
+            match read_storage.secure_load(&key) {
+                Ok(Some(data)) => {
+                    if let Err(error) = orchestrator.import_session_cfe(contact_id, &data) {
+                        tracing::warn!(%contact_id, %error, "failed to restore session");
                     }
-                };
-                let actions = orchestrator.handle_event(
-                    construct_core::orchestration::actions::IncomingEvent::SessionLoaded {
-                        key,
-                        data,
-                    },
-                );
-                if !actions.is_empty() {
-                    tracing::warn!(
-                        contact_id = %contact_id,
-                        action_count = actions.len(),
-                        "SessionLoaded produced unexpected startup actions"
-                    );
                 }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%contact_id, %error, "failed to load session"),
             }
         }
 
@@ -793,6 +777,7 @@ impl App {
             .as_ref()
             .map(CursorTracker::load)
             .unwrap_or_default();
+        let actor_known_contacts = contact_ids.clone();
         let (stream_tx, mut stream_rx) =
             spawn_stream_worker(self.grpc.clone(), contact_ids, cursor.clone());
         self.stream_tx = Some(stream_tx.clone());
@@ -805,6 +790,7 @@ impl App {
             self.internal_tx.clone(),
             self.grpc.clone(),
             cursor.clone(),
+            actor_known_contacts,
             user_id.clone(),
             device_id.clone(),
         );
@@ -866,13 +852,17 @@ impl App {
 
                         let message_id = inbound.message_id;
                         let from = inbound.from;
+                        let sender_user_id = inbound
+                            .sender_certificate
+                            .as_ref()
+                            .map(|cert| cert.user_id.clone())
+                            .unwrap_or_else(|| from.clone());
                         let content_type = inbound.content_type;
                         let wire_payload = inbound.wire_payload;
                         let is_sealed = inbound.is_sealed;
 
                         match construct_core::wire_payload::unpack(&wire_payload) {
                             Ok(decoded) => {
-                                let is_control = is_session_reset_control_type(content_type);
                                 let msg_num = decoded.message_number;
                                 orch_stream.stream_message(
                                     construct_core::orchestration::actions::IncomingEvent::MessageReceived {
@@ -882,11 +872,11 @@ impl App {
                                         msg_num,
                                         kem_ct: decoded.kem_ciphertext.unwrap_or_default(),
                                         otpk_id: decoded.one_time_prekey_id,
-                                        is_control,
+                                        sender_certificate: inbound.sender_certificate.clone(),
                                         content_type,
                                     },
                                     StreamMessageContext {
-                                        contact_id: from,
+                                        contact_id: sender_user_id.clone(),
                                         message_id,
                                         stream_cursor,
                                         content_type,
@@ -914,11 +904,11 @@ impl App {
                                             msg_num: 0,
                                             kem_ct: Vec::new(),
                                             otpk_id: 0,
-                                            is_control: true,
+                                            sender_certificate: inbound.sender_certificate.clone(),
                                             content_type,
                                         },
                                         StreamMessageContext {
-                                            contact_id: from,
+                                            contact_id: sender_user_id,
                                             message_id,
                                             stream_cursor,
                                             content_type,
@@ -1464,14 +1454,6 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Tab => {
                     if let Some(c) = self.chat_list.selected_contact() {
-                        if let Some(ref orch) = self.orch_handle {
-                            orch.send(
-                                construct_core::orchestration::actions::IncomingEvent::ActiveChatChanged {
-                                    contact_id: c.id.clone(),
-                                    is_active: true,
-                                },
-                            );
-                        }
                         self.chat_view.contact_name = c.display_name.clone();
                         self.chat_view.messages.clear();
                         // Load history from DB (last 50 messages).
@@ -1581,6 +1563,7 @@ impl App {
             KeyCode::Enter => {
                 if let Some(action) = self.settings_screen.confirm() {
                     match action {
+                        SettingsAction::CycleTheme => self.cycle_theme(),
                         SettingsAction::Back => self.screen = Screen::Main,
                         SettingsAction::Logout => self.do_logout(),
                         SettingsAction::ShowSafetyNumber => {
@@ -1603,7 +1586,27 @@ impl App {
             KeyCode::Char('s') | KeyCode::Char('S') => {
                 self.open_safety_number_screen();
             }
+            KeyCode::Char('t') | KeyCode::Char('T') => self.cycle_theme(),
             _ => {}
+        }
+    }
+
+    fn cycle_theme(&mut self) {
+        let mut cfg = match config::load_config() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                self.status = format!("Could not load settings: {e}");
+                return;
+            }
+        };
+        cfg.theme = self.theme.next();
+        match config::save_config(&cfg) {
+            Ok(()) => {
+                self.theme = cfg.theme;
+                self.settings_screen.theme = cfg.theme;
+                self.status = format!("Theme: {}", cfg.theme.label());
+            }
+            Err(e) => self.status = format!("Could not save theme: {e}"),
         }
     }
 
@@ -1752,14 +1755,9 @@ impl App {
         self.chat_list.add_contact(new_contact);
         self.resubscribe_stream_to_contacts();
         if let Some(ref orch) = self.orch_handle {
-            orch.send(
-                construct_core::orchestration::actions::IncomingEvent::ActiveChatChanged {
-                    contact_id: user_id,
-                    is_active: true,
-                },
-            );
+            orch.remember_contact(user_id.clone());
         }
-        self.status = format!("Added @{username} — opening session");
+        self.status = format!("Added @{username}");
         self.contact_search.reset();
         self.screen = Screen::Main;
     }
@@ -1853,7 +1851,7 @@ impl App {
                 .map(|c| c.display_name.clone())
                 .unwrap_or_default();
         }
-        self.status = "Node removed.".into();
+        self.status = "Person removed.".into();
     }
 
     /// Clear session from disk and reset to onboarding state.
@@ -1904,6 +1902,18 @@ impl App {
 
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        let palette = self.theme.palette();
+        frame.render_widget(Block::default().style(palette.canvas()), area);
+
+        self.onboarding.theme = self.theme;
+        self.device_link.theme = self.theme;
+        self.unlock_screen.theme = self.theme;
+        self.registration.theme = self.theme;
+        self.settings_screen.theme = self.theme;
+        self.contact_search.theme = self.theme;
+        if let Some(ref mut safety_number) = self.safety_number {
+            safety_number.theme = self.theme;
+        }
 
         if matches!(self.screen, Screen::Main) {
             self.render_main(frame);
@@ -1965,16 +1975,13 @@ impl App {
         payload: Option<&str>,
         user_id: &str,
     ) {
-        // Dark background
+        let palette = self.theme.palette();
         frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::default().style(Style::default().bg(Color::Black)),
-            area,
-        );
+        frame.render_widget(Block::default().style(palette.canvas()), area);
 
         let Some(payload) = payload else {
             let msg = Paragraph::new("Generating invite…")
-                .style(Style::default().fg(Color::DarkGray))
+                .style(palette.muted())
                 .alignment(Alignment::Center);
             frame.render_widget(msg, area);
             return;
@@ -1982,15 +1989,10 @@ impl App {
 
         // Hint at bottom
         let hint = Paragraph::new(Line::from(vec![
-            Span::styled(
-                "  Scan with Konstruct iOS  (v5, 5 min)  ",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled("  Scan with Konstruct iOS  (v5, 5 min)  ", palette.muted()),
             Span::styled(
                 "[ any key to return ]",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
+                palette.muted().add_modifier(Modifier::DIM),
             ),
         ]))
         .alignment(Alignment::Center);
@@ -2002,7 +2004,7 @@ impl App {
         let qr_area = chunks[0];
         let Some((qr_w, qr_h)) = QrWidget::size_hint(payload) else {
             let msg = Paragraph::new("[ QR unavailable — payload too large ]")
-                .style(Style::default().fg(Color::DarkGray))
+                .style(palette.muted())
                 .alignment(Alignment::Center);
             frame.render_widget(msg, qr_area);
             return;
@@ -2018,6 +2020,7 @@ impl App {
         };
 
         let widget = QrWidget {
+            theme: self.theme,
             data: payload,
             caption: Some(user_id),
             fg: Color::Black,
@@ -2028,10 +2031,11 @@ impl App {
 
     fn render_spinner(&self, frame: &mut Frame, msg: &str) {
         let area = frame.area();
+        let palette = self.theme.palette();
         let y = area.height.saturating_sub(2);
         let line = Line::from(vec![
-            Span::styled("  ⠋ ", Style::default().fg(Color::Cyan)),
-            Span::styled(msg, Style::default().fg(Color::White)),
+            Span::styled("  ⠋ ", palette.emphasis()),
+            Span::styled(msg, palette.text()),
         ]);
         frame.render_widget(
             Paragraph::new(line),
@@ -2046,9 +2050,10 @@ impl App {
 
     fn render_error_overlay(&self, frame: &mut Frame, msg: &str) {
         let area = frame.area();
+        let palette = self.theme.palette();
         let y = area.height.saturating_sub(2);
         let display = format!("  ✗ {}  (any key to retry)", msg);
-        let line = Line::from(Span::styled(display, Style::default().fg(Color::Red)));
+        let line = Line::from(Span::styled(display, palette.state(true)));
         frame.render_widget(
             Paragraph::new(line),
             ratatui::layout::Rect {
@@ -2060,9 +2065,10 @@ impl App {
         );
     }
 
-    /// Render a one-line delete confirmation bar at the bottom of the screen.
+    /// Render the delete confirmation over the active screen.
     fn render_delete_confirm(&self, frame: &mut Frame, peer_id: &str) {
         let area = frame.area();
+        let palette = self.theme.palette();
         let name = self
             .chat_list
             .contacts
@@ -2070,28 +2076,38 @@ impl App {
             .find(|c| c.id == peer_id)
             .map(|c| c.display_name.as_str())
             .unwrap_or(peer_id);
-        let y = area.height.saturating_sub(2);
-        let line = Line::from(vec![
-            Span::styled("  ⚠ Remove node ", Style::default().fg(Color::Yellow)),
-            Span::styled(name, Style::default().fg(Color::White)),
-            Span::styled(
-                " and all messages? [y] confirm  [any] cancel",
-                Style::default().fg(Color::Yellow),
-            ),
-        ]);
+        let width = area.width.min(54);
+        let height = area.height.min(5);
+        let dialog = Rect::new(
+            area.x + area.width.saturating_sub(width) / 2,
+            area.y + area.height.saturating_sub(height) / 2,
+            width,
+            height,
+        );
+        frame.render_widget(Clear, dialog);
+        let block = palette
+            .panel(" Remove person ", false)
+            .border_style(Style::default().fg(palette.warning).bg(palette.panel))
+            .style(palette.surface());
+        let inner = block.inner(dialog);
+        frame.render_widget(block, dialog);
         frame.render_widget(
-            Paragraph::new(line).style(Style::default().bg(Color::Black)),
-            ratatui::layout::Rect {
-                x: 0,
-                y,
-                width: area.width,
-                height: 1,
-            },
+            Paragraph::new(vec![
+                Line::from(name),
+                Line::from("Remove this person and all messages?"),
+                Line::from(vec![
+                    Span::styled("Y", Style::default().fg(palette.warning)),
+                    Span::raw(" remove    Any other key cancel"),
+                ]),
+            ])
+            .style(palette.surface()),
+            inner,
         );
     }
 
     fn render_main(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        let palette = self.theme.palette();
         let root = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(1),
@@ -2100,26 +2116,44 @@ impl App {
         .split(area);
 
         let title = Paragraph::new(Line::from(vec![
-            Span::styled(" ◆ Construct ", Style::default().fg(Color::Cyan)),
-            Span::styled("TUI", Style::default().fg(Color::White)),
-            Span::raw("  "),
             Span::styled(
-                "Tab=switch  ↑↓/jk=nav  i=compose  s=settings  n=add node  x=remove node  q=quit",
-                Style::default().fg(Color::DarkGray),
+                " KONSTRUCT ",
+                palette.selected().add_modifier(Modifier::BOLD),
             ),
-        ]));
+            Span::styled("  CHATS", Style::default().fg(palette.foreground)),
+            Span::styled(
+                format!("  ·  {}", self.theme.label()),
+                Style::default().fg(palette.muted),
+            ),
+        ]))
+        .style(Style::default().bg(palette.background));
         frame.render_widget(title, root[0]);
 
-        let body = Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(75)])
-            .split(root[1]);
-        frame.render_widget(&mut self.chat_list, body[0]);
-        frame.render_widget(&mut self.chat_view, body[1]);
+        self.chat_list.theme = self.theme;
+        self.chat_view.theme = self.theme;
+        if area.width >= 96 {
+            let body = Layout::horizontal([Constraint::Percentage(34), Constraint::Percentage(66)])
+                .split(root[1]);
+            frame.render_widget(&mut self.chat_list, body[0]);
+            frame.render_widget(&mut self.chat_view, body[1]);
+        } else if self.focus == Focus::ContactList {
+            frame.render_widget(&mut self.chat_list, root[1]);
+        } else {
+            frame.render_widget(&mut self.chat_view, root[1]);
+        }
 
+        let hints = match self.focus {
+            Focus::ContactList => "↑↓ choose  Enter open  a add  x remove  s settings  q quit",
+            Focus::ChatView => "Tab write  Esc chats  ↑↓ scroll  s settings",
+            Focus::Compose => "Enter send  Esc back",
+        };
+        let footer_text = format!("{}  │  {}", self.status, hints);
         let status_bar = StatusBar {
             connection: &self.connection,
-            status_text: &self.status,
-            unread_count: 0,
+            status_text: &footer_text,
+            unread_count: self.chat_list.contacts.iter().map(|c| c.unread).sum(),
             pq_active: self.pq_active,
+            theme: self.theme,
         };
         frame.render_widget(status_bar, root[2]);
     }
@@ -2135,6 +2169,7 @@ struct InboundEnvelope {
     wire_payload: Vec<u8>,
     content_type: u8,
     is_sealed: bool,
+    sender_certificate: Option<construct_core::crypto::sealed_sender::SenderCertificate>,
 }
 
 fn resolve_inbound_envelope(
@@ -2153,12 +2188,13 @@ fn resolve_inbound_envelope(
             wire_payload: envelope.encrypted_payload.to_vec(),
             content_type: content_type_to_u8(envelope.content_type),
             is_sealed: false,
+            sender_certificate: None,
         });
     };
 
     let inner = crate::proto::core::v1::SealedInner::decode(sealed.sealed_inner.as_ref())
         .map_err(|e| format!("sealed inner decode failed: {e}"))?;
-    let cert_bytes = construct_core::crypto::sealed_sender::unseal_sender_cert(
+    let cert_bytes = construct_core::crypto::sealed_sender::open_with_x25519_secret(
         &inner.sender_cert_ciphertext,
         identity_secret,
     )
@@ -2184,10 +2220,19 @@ fn resolve_inbound_envelope(
 
     Ok(InboundEnvelope {
         message_id,
-        from: cert.sender_user_id,
+        from: cert.sender_device_id.clone(),
         wire_payload,
         content_type: content_type_to_u8(inner.content_type),
         is_sealed: true,
+        sender_certificate: Some(construct_core::crypto::sealed_sender::SenderCertificate {
+            user_id: cert.sender_user_id,
+            domain: cert.sender_domain,
+            identity_key: cert.sender_identity_key.to_vec(),
+            device_id: cert.sender_device_id,
+            issued_at: cert.issued_at,
+            expires_at: cert.expires_at,
+            signature: cert.server_signature.to_vec(),
+        }),
     })
 }
 
@@ -2299,7 +2344,7 @@ mod tests {
             expires_at: 2,
             server_signature: vec![3u8; 64].into(),
         };
-        let sealed_cert = construct_core::crypto::sealed_sender::seal_sender_cert(
+        let sealed_cert = construct_core::crypto::sealed_sender::seal_to_x25519_public(
             &cert.encode_to_vec(),
             identity_public.as_ref(),
         )

@@ -1,9 +1,10 @@
+use crate::theme::ThemeMode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget},
+    widgets::{List, ListItem, ListState, StatefulWidget, Widget},
 };
 
 #[derive(Debug, Clone)]
@@ -18,6 +19,7 @@ pub struct ChatListPane {
     pub contacts: Vec<Contact>,
     pub state: ListState,
     pub focused: bool,
+    pub theme: ThemeMode,
 }
 
 impl ChatListPane {
@@ -28,6 +30,7 @@ impl ChatListPane {
             contacts: Vec::new(),
             state,
             focused: true,
+            theme: ThemeMode::default(),
         }
     }
 
@@ -85,11 +88,8 @@ impl StatefulWidget for &mut ChatListPane {
     type State = ListState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut ListState) {
-        let border_style = if self.focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+        let palette = self.theme.palette();
+        let preview_width = area.width.saturating_sub(6) as usize;
 
         let items: Vec<ListItem> = self
             .contacts
@@ -99,7 +99,7 @@ impl StatefulWidget for &mut ChatListPane {
                     Span::styled(
                         format!(" [{}]", c.unread),
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(palette.warning)
                             .add_modifier(Modifier::BOLD),
                     )
                 } else {
@@ -110,14 +110,19 @@ impl StatefulWidget for &mut ChatListPane {
                     Style::default().add_modifier(Modifier::BOLD),
                 );
                 let preview = if let Some(last) = &c.last_message {
-                    let truncated = if last.chars().count() > 18 {
-                        format!("{}…", last.chars().take(18).collect::<String>())
+                    let truncated = if last.chars().count() > preview_width {
+                        format!(
+                            "{}…",
+                            last.chars()
+                                .take(preview_width.saturating_sub(1))
+                                .collect::<String>()
+                        )
                     } else {
                         last.clone()
                     };
                     Span::styled(
-                        format!("\n  {}", truncated),
-                        Style::default().fg(Color::DarkGray),
+                        format!("  {}", truncated),
+                        Style::default().fg(palette.muted),
                     )
                 } else {
                     Span::raw("")
@@ -126,24 +131,14 @@ impl StatefulWidget for &mut ChatListPane {
                     Line::from(vec![name, badge]),
                     Line::from(vec![preview]),
                 ])
-                .style(Style::default())
+                .style(palette.surface())
             })
             .collect();
 
         let list = List::new(items)
-            .block(
-                Block::default()
-                    .title(" Contacts ")
-                    .borders(Borders::ALL)
-                    .border_style(border_style),
-            )
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ");
+            .block(palette.panel(" Chats ", self.focused))
+            .highlight_style(palette.selected().add_modifier(Modifier::BOLD))
+            .highlight_symbol("▸ ");
 
         StatefulWidget::render(list, area, buf, state);
     }
