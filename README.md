@@ -1,6 +1,11 @@
 # construct-tui
 
-Terminal UI client for [Konstruct](https://konstruct.cc) — Privacy-First Secure Messenger with Post-Quantum Encryption.
+Terminal UI client for [Konstruct](https://konstruct.cc) — a privacy-first messenger whose message content is protected by hybrid post-quantum cryptography.
+
+> **Paused (2026-10).** This client depends on `construct-core` by path and does not currently
+> build against it: the core moved on (PQXDH v2, the suite-4 ratchet, sealed sending) while the
+> TUI did not. Until it catches up it cannot talk to the iOS and Android clients. The
+> cryptography below is what it gets from the shared core once it does.
 
 Built with Rust + [Ratatui](https://ratatui.rs). Target platforms: Linux, macOS. Binary name: `konstruct`.
 
@@ -79,13 +84,18 @@ cargo build --release
 # binary: target/release/konstruct
 ```
 
-Post-quantum (Kyber-768 PQXDH) is **on by default**. To build without it:
+Post-quantum is **on by default**: PQXDH v2 with ML-KEM-1024 (Kyber-1024) in every session's
+initial key, and the suite-4 ratchet with ML-KEM-768 (Kyber-768). To build without it:
 
 ```bash
 cargo build --release --no-default-features
 ```
 
-> **Raspberry Pi Zero W:** Kyber-768 handshake can take ~60 s. Use `--no-default-features` on very small boards.
+A build without it opens classical sessions only and cannot talk to the iOS and Android
+clients, which always require post-quantum.
+
+> **Raspberry Pi Zero W:** the post-quantum handshake was measured at ~60 s there (with the
+> earlier ML-KEM-768 handshake; not re-measured with ML-KEM-1024).
 
 There is no `ice` feature and no `construct-ice` dependency. VEIL is planned later; the
 CLI still accepts `--bridge` / `--bridge-tls-sni`, but those flags are parsed-only today.
@@ -222,7 +232,10 @@ There is no CI in this repo (removed 2026-06-19; the project was too early-stage
 - **Keys never leave the device** — the server only stores public keys.
 - **Session file** is encrypted with Argon2id + AES-256-GCM. The Argon2id salt is stored alongside the ciphertext.
 - **Messages** are stored in a SQLCipher AES-256 encrypted database.
-- **Signal Protocol** (X3DH + Double Ratchet) + **PQXDH** (Kyber-768) when built with default features.
+- **X3DH + Double Ratchet** with **PQXDH v2** (ML-KEM-1024) and the suite-4 post-quantum ratchet
+  (ML-KEM-768) when built with default features — the content of messages. Who sent a sealed
+  message, and anything signed by the server, is still classical; see the protocol book's
+  [post-quantum coverage](https://konstruct-msg.github.io/construct-protocol/01-threat-model.html#post-quantum-coverage).
 
 DPI-bypass (VEIL) is **not** integrated. Transport is in-tree gRPC-over-HTTP/2 in
 `src/grpc/` and is kept extractable for a later non-Apple GUI.
