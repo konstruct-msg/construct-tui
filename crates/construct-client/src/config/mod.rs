@@ -12,8 +12,6 @@ use sha2::Sha256;
 use std::path::PathBuf;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::theme::ThemeMode;
-
 /// Persisted device identity (keys + tokens).
 /// Stored in `~/.config/construct-tui/session.enc`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,8 +90,6 @@ pub struct Config {
     pub server: String,
     #[serde(default)]
     pub transport: TransportConfig,
-    #[serde(default)]
-    pub theme: ThemeMode,
 }
 
 /// Encrypted session blob stored on disk.
@@ -289,14 +285,15 @@ impl Default for Config {
         Self {
             server: default_server(),
             transport: TransportConfig::Direct,
-            theme: ThemeMode::default(),
         }
     }
 }
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
 
-fn config_dir() -> Result<PathBuf> {
+/// The directory everything of this client lives in; a front end keeps its own preferences
+/// here too.
+pub fn config_dir() -> Result<PathBuf> {
     let base = dirs::config_dir().context("cannot locate config dir")?;
     let dir = base.join("construct-tui");
     std::fs::create_dir_all(&dir)?;

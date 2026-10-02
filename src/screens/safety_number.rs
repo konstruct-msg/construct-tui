@@ -1,14 +1,10 @@
 //! Safety number verification screen.
 //!
-//! Computes a human-verifiable fingerprint from two X25519 identity keys
-//! (ours and our peer's) — same approach as Signal's safety number.
-//!
-//! Format: 12 groups of 5 decimal digits, displayed in a 4×3 grid.
+//! Shows the safety number the client hands over (the core computes it, the same number iOS
+//! shows): 12 groups of 5 decimal digits, displayed in a 4×3 grid.
 //! Example:
 //!   12345 67890 11234  56789 01234 56789
 //!   01234 56789 01234  56789 01234 56789
-
-use sha2::{Digest, Sha512};
 
 use crate::theme::ThemeMode;
 use ratatui::{
@@ -19,36 +15,6 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-/// Compute the safety number for a pair of identity keys.
-///
-/// Canonical ordering: the lexicographically smaller key goes first.
-/// This ensures both sides produce the same number regardless of who initiates.
-pub fn compute_safety_number(our_identity: &[u8; 32], their_identity: &[u8; 32]) -> String {
-    let (first, second) = if our_identity <= their_identity {
-        (our_identity, their_identity)
-    } else {
-        (their_identity, our_identity)
-    };
-
-    let mut hasher = Sha512::new();
-    hasher.update(b"construct-safety-number-v1\x00");
-    hasher.update(first);
-    hasher.update(second);
-    let digest = hasher.finalize();
-
-    // Extract 12 groups of 5 decimal digits from the first 60 bytes.
-    // Each group: take 5 bytes → interpret as big-endian u64 → mod 100000 → zero-pad to 5 digits.
-    (0..12)
-        .map(|i| {
-            let offset = i * 5;
-            let bytes = &digest[offset..offset + 5];
-            let n = bytes.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64);
-            format!("{:05}", n % 100_000)
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Safety number verification overlay.
 pub struct SafetyNumberScreen {
     pub theme: ThemeMode,
@@ -57,15 +23,12 @@ pub struct SafetyNumberScreen {
 }
 
 impl SafetyNumberScreen {
-    pub fn new(
-        contact_name: impl Into<String>,
-        our_identity: &[u8; 32],
-        their_identity: &[u8; 32],
-    ) -> Self {
+    /// `number` is the client's — the core computes it; this screen only lays it out.
+    pub fn new(contact_name: impl Into<String>, number: String) -> Self {
         Self {
             theme: ThemeMode::default(),
             contact_name: contact_name.into(),
-            number: compute_safety_number(our_identity, their_identity),
+            number,
         }
     }
 
@@ -115,31 +78,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn safety_number_is_symmetric() {
-        let key_a = [1u8; 32];
-        let key_b = [2u8; 32];
-        assert_eq!(
-            compute_safety_number(&key_a, &key_b),
-            compute_safety_number(&key_b, &key_a),
-        );
-    }
-
-    #[test]
-    fn safety_number_has_twelve_groups() {
-        let key_a = [0xABu8; 32];
-        let key_b = [0xCDu8; 32];
-        let sn = compute_safety_number(&key_a, &key_b);
-        assert_eq!(sn.split_whitespace().count(), 12);
-    }
-
-    #[test]
-    fn safety_number_groups_are_5_digits() {
-        let key_a = [42u8; 32];
-        let key_b = [99u8; 32];
-        let sn = compute_safety_number(&key_a, &key_b);
-        for group in sn.split_whitespace() {
-            assert_eq!(group.len(), 5);
-            assert!(group.chars().all(|c| c.is_ascii_digit()));
-        }
+    fn twelve_groups_lay_out_as_four_rows_of_three() {
+        let number = (0..12)
+            .map(|i| format!("{i:05}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let screen = SafetyNumberScreen::new("alice", number);
+        let rows = screen.formatted_grid();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0], "00000  00001  00002");
     }
 }

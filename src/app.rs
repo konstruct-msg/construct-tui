@@ -13,12 +13,15 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
-use crate::{
+use construct_client::{
+    self as client, AccountInfo, ClientCommand, ClientConfig, ClientEvent, ClientHandle,
+    FindStarted,
     bridge::BridgeEvent,
-    client::{
-        self, AccountInfo, ClientCommand, ClientConfig, ClientEvent, ClientHandle, FindStarted,
-    },
-    config::{self, SessionState, TransportConfig},
+    config::{SessionState, TransportConfig},
+    storage::StoredContact,
+};
+
+use crate::{
     event::{Event, EventHandler, is_quit},
     screens::onboarding::OnboardingField,
     screens::{
@@ -29,7 +32,6 @@ use crate::{
         chat_view::{ChatMessage, MessageKind},
         qr_widget::QrWidget,
     },
-    storage::StoredContact,
     theme::ThemeMode,
     tui::Tui,
 };
@@ -346,11 +348,7 @@ impl App {
                     });
                 }
             }
-            ClientEvent::SafetyNumberKeys {
-                contact_id,
-                ours,
-                theirs,
-            } => {
+            ClientEvent::SafetyNumber { contact_id, number } => {
                 let name = self
                     .chat_list
                     .contacts
@@ -358,7 +356,7 @@ impl App {
                     .find(|c| c.id == contact_id)
                     .map(|c| c.display_name.clone())
                     .unwrap_or(contact_id);
-                self.safety_number = Some(SafetyNumberScreen::new(name, &ours, &theirs));
+                self.safety_number = Some(SafetyNumberScreen::new(name, number));
                 self.screen = Screen::SafetyNumber;
             }
             ClientEvent::InviteMinted(result) => {
@@ -759,21 +757,14 @@ impl App {
         self.screen = Screen::IdentityQr;
     }
 
-    /// The theme is a front-end preference, stored in the config file.
+    /// The theme is a front-end preference, stored beside the client's config.
     fn cycle_theme(&mut self) {
-        let mut cfg = match config::load_config() {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                self.status = format!("Could not load settings: {e}");
-                return;
-            }
-        };
-        cfg.theme = self.theme.next();
-        match config::save_config(&cfg) {
+        let next = self.theme.next();
+        match crate::theme::save_theme(next) {
             Ok(()) => {
-                self.theme = cfg.theme;
-                self.settings_screen.theme = cfg.theme;
-                self.status = format!("Theme: {}", cfg.theme.label());
+                self.theme = next;
+                self.settings_screen.theme = next;
+                self.status = format!("Theme: {}", next.label());
             }
             Err(e) => self.status = format!("Could not save theme: {e}"),
         }
