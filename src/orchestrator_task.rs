@@ -119,7 +119,7 @@ pub fn spawn_orchestrator_task(
     orchestrator: Orchestrator,
     storage: Storage,
     stream_tx: mpsc::Sender<StreamCmd>,
-    internal_tx: mpsc::UnboundedSender<crate::app::InternalEventProxy>,
+    internal_tx: mpsc::UnboundedSender<crate::client::ClientEvent>,
     grpc: GrpcClient,
     cursor: CursorTracker,
     known_contacts: Vec<String>,
@@ -158,7 +158,7 @@ async fn run(
     mut orchestrator: Orchestrator,
     mut storage: Storage,
     stream_tx: mpsc::Sender<StreamCmd>,
-    internal_tx: mpsc::UnboundedSender<crate::app::InternalEventProxy>,
+    internal_tx: mpsc::UnboundedSender<crate::client::ClientEvent>,
     grpc: GrpcClient,
     cursor: CursorTracker,
     known_contacts: Vec<String>,
@@ -291,7 +291,7 @@ async fn handle_command(
     orchestrator: &mut Orchestrator,
     storage: &mut Storage,
     stream_tx: &mpsc::Sender<StreamCmd>,
-    internal_tx: &mpsc::UnboundedSender<crate::app::InternalEventProxy>,
+    internal_tx: &mpsc::UnboundedSender<crate::client::ClientEvent>,
     grpc: &GrpcClient,
     cursor: &CursorTracker,
     my_user_id: &str,
@@ -448,7 +448,7 @@ async fn dispatch(
     orchestrator: &mut Orchestrator,
     storage: &mut Storage,
     stream_tx: &mpsc::Sender<StreamCmd>,
-    internal_tx: &mpsc::UnboundedSender<crate::app::InternalEventProxy>,
+    internal_tx: &mpsc::UnboundedSender<crate::client::ClientEvent>,
     grpc: &GrpcClient,
     cursor: &CursorTracker,
     my_user_id: &str,
@@ -467,9 +467,9 @@ async fn dispatch(
                 tracing::warn!(%contact_id, "trusted server key is required to open receiving session");
             }
             if let Some(error) = opened.last_error {
-                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                    BridgeEvent::Error(format!("[SESSION_OPEN] {error}")),
-                ));
+                let _ = internal_tx.send(crate::client::ClientEvent::Bridge(BridgeEvent::Error(
+                    format!("[SESSION_OPEN] {error}"),
+                )));
             }
             for action in opened.actions {
                 Box::pin(dispatch(
@@ -547,7 +547,7 @@ async fn dispatch(
             );
 
             // Notify UI.
-            let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
+            let _ = internal_tx.send(crate::client::ClientEvent::Bridge(
                 BridgeEvent::NewMessage {
                     peer_id: contact_id,
                     message_id,
@@ -609,9 +609,9 @@ async fn dispatch(
             // Until that mapping is retained, sending `to` as recipient.user_id
             // would create an envelope addressed to the wrong identity space.
             if uuid::Uuid::parse_str(&to).is_err() {
-                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                    BridgeEvent::Error("Device-to-account routing is not ready".into()),
-                ));
+                let _ = internal_tx.send(crate::client::ClientEvent::Bridge(BridgeEvent::Error(
+                    "Device-to-account routing is not ready".into(),
+                )));
                 tracing::warn!(device_id = %to, %message_id, "encrypted send held: no account routing");
                 return;
             }
@@ -690,7 +690,7 @@ async fn dispatch(
 
         // ── UI notifications ─────────────────────────────────────────────────
         Action::NotifyNewMessage { chat_id, preview } => {
-            let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
+            let _ = internal_tx.send(crate::client::ClientEvent::Bridge(
                 BridgeEvent::NewMessage {
                     peer_id: chat_id,
                     message_id: String::new(),
@@ -706,7 +706,7 @@ async fn dispatch(
                 contact_id = %contact_id,
                 "Session created"
             );
-            let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
+            let _ = internal_tx.send(crate::client::ClientEvent::Bridge(
                 BridgeEvent::SessionReady { contact_id },
             ));
         }
@@ -718,7 +718,7 @@ async fn dispatch(
                 message = %message,
                 "NotifyError from orchestrator"
             );
-            let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(BridgeEvent::Error(
+            let _ = internal_tx.send(crate::client::ClientEvent::Bridge(BridgeEvent::Error(
                 format!("[{code}] {message}"),
             )));
         }
@@ -773,7 +773,7 @@ async fn prepare_outgoing(
     orchestrator: &mut Orchestrator,
     storage: &mut Storage,
     stream_tx: &mpsc::Sender<StreamCmd>,
-    internal_tx: &mpsc::UnboundedSender<crate::app::InternalEventProxy>,
+    internal_tx: &mpsc::UnboundedSender<crate::client::ClientEvent>,
     grpc: &GrpcClient,
     cursor: &CursorTracker,
     my_user_id: &str,
@@ -812,15 +812,15 @@ async fn prepare_outgoing(
                     error = %e,
                     "session init before send failed"
                 );
-                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                    BridgeEvent::Error(format!("[SESSION_INIT_FAILED] {e}")),
-                ));
+                let _ = internal_tx.send(crate::client::ClientEvent::Bridge(BridgeEvent::Error(
+                    format!("[SESSION_INIT_FAILED] {e}"),
+                )));
                 return None;
             }
             if !orchestrator.has_active_session(&contact_id) {
-                let _ = internal_tx.send(crate::app::InternalEventProxy::Bridge(
-                    BridgeEvent::Error("Device routing is required before sending".into()),
-                ));
+                let _ = internal_tx.send(crate::client::ClientEvent::Bridge(BridgeEvent::Error(
+                    "Device routing is required before sending".into(),
+                )));
                 return None;
             }
             let plaintext = if crate::knst::is_frame(&plaintext) || plaintext.first() == Some(&0) {
@@ -846,7 +846,7 @@ async fn establish_session(
     orchestrator: &mut Orchestrator,
     storage: &mut Storage,
     stream_tx: &mpsc::Sender<StreamCmd>,
-    internal_tx: &mpsc::UnboundedSender<crate::app::InternalEventProxy>,
+    internal_tx: &mpsc::UnboundedSender<crate::client::ClientEvent>,
     grpc: &GrpcClient,
     cursor: &CursorTracker,
     my_user_id: &str,
@@ -1238,7 +1238,7 @@ mod tests {
         storage: Storage,
         stream_tx: tokio::sync::mpsc::Sender<StreamCmd>,
         stream_rx: tokio::sync::mpsc::Receiver<StreamCmd>,
-        internal_tx: tokio::sync::mpsc::UnboundedSender<crate::app::InternalEventProxy>,
+        internal_tx: tokio::sync::mpsc::UnboundedSender<crate::client::ClientEvent>,
         grpc: GrpcClient,
         cursor: CursorTracker,
         self_tx: tokio::sync::mpsc::UnboundedSender<IncomingEvent>,
