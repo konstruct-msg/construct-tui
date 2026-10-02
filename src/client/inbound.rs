@@ -5,7 +5,7 @@
 use prost::Message;
 use tokio::sync::mpsc;
 
-use super::ClientEvent;
+use super::{ClientEvent, Inbox};
 use crate::{
     bridge::BridgeEvent,
     orchestrator_task::{OrchestratorHandle, StreamMessageContext},
@@ -18,6 +18,7 @@ pub(super) fn spawn_relay(
     orch: OrchestratorHandle,
     cursor: CursorTracker,
     events: mpsc::UnboundedSender<ClientEvent>,
+    inbox: mpsc::UnboundedSender<Inbox>,
     identity_secret: Vec<u8>,
 ) {
     let orch_tx = orch.tx.clone();
@@ -89,7 +90,7 @@ pub(super) fn spawn_relay(
                     }));
                 }
                 StreamEvent::AuthRequired => {
-                    let _ = events.send(ClientEvent::StreamAuthRequired);
+                    let _ = inbox.send(Inbox::StreamAuthRequired);
                 }
             }
         }

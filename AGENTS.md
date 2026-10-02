@@ -70,8 +70,10 @@ screens/  →  app.rs  (terminal front end: screens, keys, drawing)
 ```
 
 - **`client/` knows no front end.** No Ratatui, no crossterm, no `screens`, no `App` —
-  `client::boundary_tests` fails on any of them. `app.rs` turns keys into `Client` calls and
-  `ClientEvent`s into what is on screen; a decision made in `app.rs` is one the desktop shell
+  `client::boundary_tests` fails on any of them. The client runs as its own task: `app.rs`
+  sends `ClientCommand`s through a `ClientHandle` and turns `ClientEvent`s into what is on
+  screen — it never calls into the client or waits on it. Key material stays in the client
+  (the invite is minted there; the settings screen held the signing key until 2026-10-02); a decision made in `app.rs` is one the desktop shell
   would have to make again. Since 2026-10-02 (`decisions/desktop-is-the-tui-client-with-a-second-shell.md`):
   Linux and Windows get a second front end on the same `client/`, not a second client.
 

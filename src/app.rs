@@ -1,6 +1,6 @@
 //! The terminal front end: screens, focus, keys and drawing. What the program *does* is the
-//! client layer (`crate::client`); this file turns keys into calls on it and its events into
-//! what is on screen.
+//! client layer (`crate::client`), running as its own task; this file sends it commands for
+//! keys and turns its events into what is on screen.
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
@@ -15,7 +15,9 @@ use tokio::sync::mpsc;
 
 use crate::{
     bridge::BridgeEvent,
-    client::{AuthMsg, AuthOutcome, Client, ClientConfig, ClientEvent, FindStarted},
+    client::{
+        self, AccountInfo, ClientCommand, ClientConfig, ClientEvent, ClientHandle, FindStarted,
+    },
     config::{self, SessionState, TransportConfig},
     event::{Event, EventHandler, is_quit},
     screens::onboarding::OnboardingField,
@@ -31,6 +33,9 @@ use crate::{
     theme::ThemeMode,
     tui::Tui,
 };
+
+/// How many messages opening a conversation shows.
+const HISTORY_LIMIT: usize = 50;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Screen {
@@ -82,9 +87,13 @@ pub struct AppConfig {
 }
 
 pub struct App {
-    client: Client,
+    client: ClientHandle,
     /// Everything the client reports back.
     client_rx: mpsc::UnboundedReceiver<ClientEvent>,
+    /// The client's last word on who we are.
+    account: AccountInfo,
+    /// The invite our QR code shows, as last minted.
+    invite: Option<Result<String, String>>,
     /// Spinner ticks for the registration screen — a front-end concern, not the client's.
     tick_tx: mpsc::UnboundedSender<()>,
     tick_rx: mpsc::UnboundedReceiver<()>,
@@ -98,6 +107,8 @@ pub struct App {
     focus: Focus,
     chat_list: ChatListPane,
     chat_view: ChatViewPane,
+    /// The contact whose conversation the chat view shows.
+    open_peer: Option<String>,
     status: String,
     running: bool,
     theme: ThemeMode,
@@ -121,7 +132,13 @@ impl App {
 
         let (client_tx, client_rx) = mpsc::unbounded_channel();
         let (tick_tx, tick_rx) = mpsc::unbounded_channel();
-        let client = Client::new(
+        let account = AccountInfo {
+            server_url: cfg.server_url.clone(),
+            transport_label: client::transport_label(&cfg.transport),
+            pq_active: cfg.pq_active,
+            ..AccountInfo::default()
+        };
+        let client = client::spawn(
             ClientConfig {
                 server_url: cfg.server_url,
                 transport: cfg.transport,
@@ -130,11 +147,13 @@ impl App {
             },
             client_tx,
         );
-        let settings_screen = fresh_settings_screen(&client);
+        let settings_screen = fresh_settings_screen(&account);
 
         Self {
             client,
             client_rx,
+            account,
+            invite: None,
             tick_tx,
             tick_rx,
             screen: Screen::Startup,
@@ -146,6 +165,7 @@ impl App {
             focus: Focus::ContactList,
             chat_list,
             chat_view: ChatViewPane::new(initial_name),
+            open_peer: None,
             status: "Ready".into(),
             running: true,
             theme: cfg.theme,
@@ -178,14 +198,14 @@ impl App {
         Ok(())
     }
 
-    // ── Startup and authentication ──────────────────────────────────────────────
+    // ── Startup ─────────────────────────────────────────────────────────────────
 
     /// Detect session state on disk and set the initial screen accordingly.
     fn startup_check(&mut self) {
-        match self.client.stored_session_state() {
+        match client::stored_session_state() {
             SessionState::Encrypted => self.screen = Screen::Unlock,
             SessionState::Plaintext => {
-                self.client.restore_from_disk();
+                self.client.send(ClientCommand::RestoreFromDisk);
                 self.screen = Screen::Connecting("Restoring session…".into());
             }
             SessionState::None => self.screen = Screen::Onboarding,
@@ -193,7 +213,7 @@ impl App {
     }
 
     fn start_registration(&mut self, username: String) {
-        self.client.register(username);
+        self.client.send(ClientCommand::Register { username });
         self.registration = RegistrationScreen::new();
         self.start_ticker();
         self.screen = Screen::Registering;
@@ -220,22 +240,54 @@ impl App {
         }
     }
 
+    // ── Client events ───────────────────────────────────────────────────────────
+
     fn handle_client_event(&mut self, event: ClientEvent) {
         match event {
-            ClientEvent::Auth(msg) => {
-                if matches!(self.screen, Screen::Registering) {
-                    self.stop_ticker();
-                    // Show all steps as done before the outcome replaces the screen.
-                    self.registration.active_step = crate::screens::registration::STEPS.len();
-                }
-                self.handle_auth_msg(msg);
+            ClientEvent::Account(account) => self.apply_account(account),
+            ClientEvent::Started(contacts) => {
+                self.finish_registration_screen();
+                self.enter_main(contacts);
             }
-            ClientEvent::TokenRefresh(msg) => {
-                if let Err(status) = self.client.apply_token_refresh(msg) {
-                    self.status = status;
+            ClientEvent::NeedsPassphrase => {
+                self.finish_registration_screen();
+                self.unlock_screen.reset_for_mode(UnlockMode::SetNew);
+                self.screen = Screen::SetPassphrase;
+            }
+            ClientEvent::SaveFailed(e) => {
+                self.finish_registration_screen();
+                self.screen = Screen::AuthError(e);
+            }
+            ClientEvent::AuthFailed { reason, no_session } => {
+                self.finish_registration_screen();
+                self.stop_ticker();
+                // Auto-restore on startup (plaintext path): no passphrase has been entered, so
+                // show Onboarding — the user likely logged out or the session file is stale.
+                // Unlock path: the passphrase opened the session, so this is a server/network
+                // error; show it rather than silently landing on onboarding.
+                let is_auto_restore = matches!(self.screen, Screen::Connecting(_))
+                    && !self.account.has_session_key
+                    && self.onboarding.username.is_empty();
+                if no_session || is_auto_restore {
+                    self.screen = Screen::Onboarding;
+                } else {
+                    tracing::error!(error = %reason, "Authentication failed");
+                    self.screen = Screen::AuthError(reason);
                 }
             }
+            ClientEvent::UnlockFailed(e) => {
+                self.unlock_screen.set_error(e);
+                self.screen = Screen::Unlock;
+            }
+            ClientEvent::PassphraseFailed(e) => self.unlock_screen.set_error(e),
+            ClientEvent::RegistrationStep(step) => self.registration.advance(step.index()),
             ClientEvent::Bridge(evt) => self.handle_bridge_event(evt),
+            ClientEvent::SearchStarted(started) => {
+                self.contact_search.searching = true;
+                if let FindStarted::InviteRedemption = started {
+                    self.contact_search.status = Some("Redeeming invite…".into());
+                }
+            }
             ClientEvent::ContactSearchResult(results) => self.contact_search.set_results(results),
             ClientEvent::ContactSearchError(msg) => {
                 let shown = if msg.contains("rate limit") || msg.contains("8:") {
@@ -245,61 +297,106 @@ impl App {
                 };
                 self.contact_search.set_error(shown);
             }
-            ClientEvent::InviteAccepted { user_id, username } => {
-                self.finish_add_contact(user_id, username);
+            ClientEvent::ContactAdded { user_id, username } => {
+                if !self.chat_list.contacts.iter().any(|c| c.id == user_id) {
+                    self.chat_list.add_contact(Contact {
+                        id: user_id,
+                        display_name: username.clone(),
+                        unread: 0,
+                        last_message: None,
+                    });
+                }
+                self.status = format!("Added @{username}");
+                self.contact_search.reset();
+                self.screen = Screen::Main;
             }
-            ClientEvent::RegistrationStep(step) => self.registration.advance(step.index()),
-            ClientEvent::StreamAuthRequired => self.client.refresh_token_now(),
+            ClientEvent::ContactRemoved { peer_id } => self.remove_contact_from_view(&peer_id),
+            ClientEvent::MessageQueued {
+                contact_id,
+                message_id,
+                text,
+            } => {
+                if self.open_peer.as_deref() == Some(contact_id.as_str()) {
+                    self.chat_view.messages.push(ChatMessage {
+                        id: message_id,
+                        kind: MessageKind::Sent,
+                        text,
+                        time: current_time_hhmm(),
+                    });
+                }
+                self.status = "Message sent".into();
+            }
+            ClientEvent::History { peer_id, messages } => {
+                if self.open_peer.as_deref() != Some(peer_id.as_str()) {
+                    return; // the user has moved on
+                }
+                self.chat_view.messages.clear();
+                for msg in messages {
+                    let kind = if msg.direction == "sent" {
+                        MessageKind::Sent
+                    } else {
+                        MessageKind::Received
+                    };
+                    let secs = msg.timestamp_ms / 1000;
+                    self.chat_view.messages.push(ChatMessage {
+                        id: msg.id,
+                        kind,
+                        text: msg.text,
+                        time: format!("{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60),
+                    });
+                }
+            }
+            ClientEvent::SafetyNumberKeys {
+                contact_id,
+                ours,
+                theirs,
+            } => {
+                let name = self
+                    .chat_list
+                    .contacts
+                    .iter()
+                    .find(|c| c.id == contact_id)
+                    .map(|c| c.display_name.clone())
+                    .unwrap_or(contact_id);
+                self.safety_number = Some(SafetyNumberScreen::new(name, &ours, &theirs));
+                self.screen = Screen::SafetyNumber;
+            }
+            ClientEvent::InviteMinted(result) => {
+                if let Err(ref e) = result {
+                    tracing::warn!("invite generation failed: {e}");
+                }
+                self.invite = Some(result);
+            }
+            ClientEvent::LoggedOut => self.reset_after_logout(),
+            ClientEvent::Notice(text) => self.status = text,
         }
     }
 
-    fn handle_auth_msg(&mut self, msg: AuthMsg) {
-        match msg {
-            AuthMsg::Success(success) => {
-                let outcome = self.client.apply_auth_success(*success);
-                self.status = format!("Connected as {}", self.client.user_id());
-                self.connection = ConnectionState::Connected {
-                    transport: self.client.transport_label().into(),
-                    latency_ms: None,
-                };
-                self.settings_screen.update(
-                    self.client.server_url(),
-                    self.client.transport_label(),
-                    self.client.device_id(),
-                    self.client.user_id(),
-                    self.client.pq_active(),
-                    self.client.signing_key_hex(),
-                );
-                match outcome {
-                    AuthOutcome::Ready(contacts) => self.enter_main(contacts),
-                    AuthOutcome::NeedsPassphrase => {
-                        self.unlock_screen.reset_for_mode(UnlockMode::SetNew);
-                        self.screen = Screen::SetPassphrase;
-                    }
-                    AuthOutcome::Failed(e) => self.screen = Screen::AuthError(e),
-                }
-            }
-            AuthMsg::Failure(msg) if msg == "no_session" => {
-                self.stop_ticker();
-                self.screen = Screen::Onboarding;
-            }
-            AuthMsg::Failure(msg) => {
-                self.stop_ticker();
-                // Auto-restore on startup (plaintext path): no passphrase has been entered, so
-                // show Onboarding — the user likely logged out or the session file is stale.
-                // Unlock path: the passphrase opened the session, so this is a server/network
-                // error; show it rather than silently landing on onboarding.
-                let is_auto_restore = matches!(self.screen, Screen::Connecting(_))
-                    && !self.client.has_session_key()
-                    && self.onboarding.username.is_empty();
-                if is_auto_restore {
-                    self.screen = Screen::Onboarding;
-                } else {
-                    tracing::error!(error = %msg, "Authentication failed");
-                    self.screen = Screen::AuthError(msg);
-                }
-            }
+    /// Registration finished one way or another: show every step done and stop the spinner.
+    fn finish_registration_screen(&mut self) {
+        if matches!(self.screen, Screen::Registering) {
+            self.stop_ticker();
+            self.registration.active_step = crate::screens::registration::STEPS.len();
         }
+    }
+
+    fn apply_account(&mut self, account: AccountInfo) {
+        let signed_in = !account.user_id.is_empty();
+        if signed_in {
+            self.status = format!("Connected as {}", account.user_id);
+            self.connection = ConnectionState::Connected {
+                transport: account.transport_label.into(),
+                latency_ms: None,
+            };
+            self.settings_screen.update(
+                &account.server_url,
+                account.transport_label,
+                &account.device_id,
+                &account.user_id,
+                account.pq_active,
+            );
+        }
+        self.account = account;
     }
 
     /// The client is running: show its contacts and the chat screen.
@@ -335,7 +432,7 @@ impl App {
             BridgeEvent::StreamStatus { connected } => {
                 if connected {
                     self.connection = ConnectionState::Connected {
-                        transport: self.client.transport_label().into(),
+                        transport: self.account.transport_label.into(),
                         latency_ms: None,
                     };
                     self.status = "● connected".into();
@@ -390,7 +487,7 @@ impl App {
         if matches!(self.screen, Screen::AuthError(_)) {
             // A session key means the user came from Unlock — go back there to retry.
             // Otherwise it was an auto-restore or registration error: Onboarding.
-            if self.client.has_session_key() {
+            if self.account.has_session_key {
                 self.unlock_screen.reset_for_mode(UnlockMode::Unlock);
                 self.screen = Screen::Unlock;
             } else {
@@ -475,10 +572,10 @@ impl App {
                     self.unlock_screen.set_error("Enter your passphrase");
                     return;
                 }
-                match self.client.unlock(&passphrase) {
-                    Ok(()) => self.screen = Screen::Connecting("Authenticating…".into()),
-                    Err(e) => self.unlock_screen.set_error(e),
-                }
+                // Key derivation runs in the client task; a wrong passphrase comes back as
+                // UnlockFailed and returns here.
+                self.client.send(ClientCommand::Unlock(passphrase));
+                self.screen = Screen::Connecting("Authenticating…".into());
             }
             _ => {}
         }
@@ -495,11 +592,7 @@ impl App {
                         .set_error("Choose a passphrase to protect your session");
                     return;
                 }
-                match self.client.set_passphrase(&passphrase) {
-                    Ok(Some(contacts)) => self.enter_main(contacts),
-                    Ok(None) => {}
-                    Err(e) => self.unlock_screen.set_error(e),
-                }
+                self.client.send(ClientCommand::SetPassphrase(passphrase));
             }
             _ => {}
         }
@@ -520,7 +613,7 @@ impl App {
                         .set_status("Paste the link token first", true);
                 } else {
                     self.device_link.clear_status();
-                    self.client.link_device(token);
+                    self.client.send(ClientCommand::LinkDevice { token });
                     self.screen = Screen::Connecting("Confirming device link…".into());
                 }
             }
@@ -538,7 +631,11 @@ impl App {
         // If a delete-confirm dialog is active, intercept all keys.
         if self.delete_confirm.is_some() {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => self.confirm_delete(),
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(peer_id) = self.delete_confirm.take() {
+                        self.client.send(ClientCommand::DeleteContact { peer_id });
+                    }
+                }
                 _ => {
                     self.delete_confirm = None;
                 }
@@ -590,18 +687,13 @@ impl App {
                 KeyCode::Esc => self.set_focus(Focus::ChatView),
                 KeyCode::Enter => {
                     let text = self.chat_view.take_compose();
-                    if !text.trim().is_empty() {
-                        let message_id = match self.chat_list.selected_contact() {
-                            Some(contact) => self.client.send_text(&contact.id, &text),
-                            None => uuid::Uuid::new_v4().to_string(),
-                        };
-                        self.chat_view.messages.push(ChatMessage {
-                            id: message_id,
-                            kind: MessageKind::Sent,
+                    if !text.trim().is_empty()
+                        && let Some(contact) = self.chat_list.selected_contact()
+                    {
+                        self.client.send(ClientCommand::SendText {
+                            contact_id: contact.id.clone(),
                             text,
-                            time: current_time_hhmm(),
                         });
-                        self.status = "Message sent".into();
                     }
                 }
                 KeyCode::Backspace => self.chat_view.pop_char(),
@@ -611,27 +703,18 @@ impl App {
         }
     }
 
-    /// Show the selected person's last 50 messages.
+    /// Show the selected person's conversation; the history arrives as an event.
     fn open_selected_chat(&mut self) {
         let Some(c) = self.chat_list.selected_contact() else {
             return;
         };
         self.chat_view.contact_name = c.display_name.clone();
         self.chat_view.messages.clear();
-        for msg in self.client.history(&c.id, 50) {
-            let kind = if msg.direction == "sent" {
-                MessageKind::Sent
-            } else {
-                MessageKind::Received
-            };
-            let secs = msg.timestamp_ms / 1000;
-            self.chat_view.messages.push(ChatMessage {
-                id: msg.id,
-                kind,
-                text: msg.text,
-                time: format!("{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60),
-            });
-        }
+        self.open_peer = Some(c.id.clone());
+        self.client.send(ClientCommand::LoadHistory {
+            peer_id: c.id.clone(),
+            limit: HISTORY_LIMIT,
+        });
     }
 
     fn set_focus(&mut self, f: Focus) {
@@ -651,20 +734,29 @@ impl App {
                     match action {
                         SettingsAction::CycleTheme => self.cycle_theme(),
                         SettingsAction::Back => self.screen = Screen::Main,
-                        SettingsAction::Logout => self.do_logout(),
+                        SettingsAction::Logout => self.client.send(ClientCommand::Logout),
                         SettingsAction::ShowSafetyNumber => self.open_safety_number_screen(),
-                        SettingsAction::ExportKeys => self.export_identity_key(),
-                        SettingsAction::ShowMyQr => self.screen = Screen::IdentityQr,
+                        SettingsAction::ExportKeys => {
+                            self.client.send(ClientCommand::ExportIdentityKey);
+                        }
+                        SettingsAction::ShowMyQr => self.show_my_qr(),
                     }
                 }
             }
             // Shortcut keys
-            KeyCode::Char('l') | KeyCode::Char('L') => self.do_logout(),
-            KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::IdentityQr,
+            KeyCode::Char('l') | KeyCode::Char('L') => self.client.send(ClientCommand::Logout),
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.show_my_qr(),
             KeyCode::Char('s') | KeyCode::Char('S') => self.open_safety_number_screen(),
             KeyCode::Char('t') | KeyCode::Char('T') => self.cycle_theme(),
             _ => {}
         }
+    }
+
+    /// A fresh invite every time: its TTL is five minutes.
+    fn show_my_qr(&mut self) {
+        self.invite = None;
+        self.client.send(ClientCommand::MintInvite);
+        self.screen = Screen::IdentityQr;
     }
 
     /// The theme is a front-end preference, stored in the config file.
@@ -692,24 +784,9 @@ impl App {
             self.status = "Select a contact first".into();
             return;
         };
-        match self.client.safety_number_keys(&contact.id) {
-            Ok((ours, theirs)) => {
-                self.safety_number = Some(SafetyNumberScreen::new(
-                    contact.display_name.clone(),
-                    &ours,
-                    &theirs,
-                ));
-                self.screen = Screen::SafetyNumber;
-            }
-            Err(e) => self.status = e,
-        }
-    }
-
-    fn export_identity_key(&mut self) {
-        self.status = match self.client.export_identity_key() {
-            Ok(path) => format!("Key exported → {path}"),
-            Err(e) => e,
-        };
+        self.client.send(ClientCommand::SafetyNumber {
+            contact_id: contact.id.clone(),
+        });
     }
 
     fn handle_contact_search(&mut self, key: crossterm::event::KeyEvent) {
@@ -724,7 +801,9 @@ impl App {
                 if self.contact_search.selected().is_some() {
                     self.add_selected_search_result();
                 } else {
-                    self.submit_contact_search();
+                    self.client.send(ClientCommand::FindContact {
+                        query: self.contact_search.query.clone(),
+                    });
                 }
             }
             KeyCode::Tab => self.contact_search.next(),
@@ -738,51 +817,22 @@ impl App {
         }
     }
 
-    fn submit_contact_search(&mut self) {
-        match self.client.find_contact(&self.contact_search.query) {
-            Ok(FindStarted::UsernameSearch) => self.contact_search.searching = true,
-            Ok(FindStarted::InviteRedemption) => {
-                self.contact_search.searching = true;
-                self.contact_search.status = Some("Redeeming invite…".into());
-            }
-            Err(e) => self.contact_search.set_error(e),
-        }
-    }
-
     fn add_selected_search_result(&mut self) {
         let Some(result) = self.contact_search.selected().cloned() else {
             return;
         };
-        self.finish_add_contact(result.user_id, result.username);
-    }
-
-    fn finish_add_contact(&mut self, user_id: String, username: String) {
-        self.client.add_contact(&user_id, &username);
-        self.chat_list.add_contact(Contact {
-            id: user_id,
-            display_name: username.clone(),
-            unread: 0,
-            last_message: None,
+        self.client.send(ClientCommand::AddContact {
+            user_id: result.user_id,
+            username: result.username,
         });
-        self.status = format!("Added @{username}");
-        self.contact_search.reset();
-        self.screen = Screen::Main;
     }
 
-    /// Execute a confirmed contact deletion: remove from storage, chat list, and active view.
-    fn confirm_delete(&mut self) {
-        let Some(peer_id) = self.delete_confirm.take() else {
-            return;
-        };
-        if let Err(e) = self.client.delete_contact(&peer_id) {
-            self.status = e;
-            return;
-        }
+    /// The client removed a person: drop them from the list and, if open, the chat view.
+    fn remove_contact_from_view(&mut self, peer_id: &str) {
         if let Some(i) = self.chat_list.contacts.iter().position(|c| c.id == peer_id) {
             self.chat_list.remove_at(i);
         }
-        // Clear chat view if it was showing the deleted contact.
-        if self.chat_view.contact_name == peer_id
+        if self.open_peer.as_deref() == Some(peer_id)
             || self.chat_list.contacts.iter().all(|c| c.id != peer_id)
         {
             self.chat_view.messages.clear();
@@ -791,21 +841,22 @@ impl App {
                 .selected_contact()
                 .map(|c| c.display_name.clone())
                 .unwrap_or_default();
+            if self.open_peer.as_deref() == Some(peer_id) {
+                self.open_peer = None;
+            }
         }
         self.status = "Person removed.".into();
     }
 
-    /// Clear session from disk and reset to onboarding state.
-    fn do_logout(&mut self) {
-        if let Err(e) = self.client.logout() {
-            self.status = e;
-            return;
-        }
+    /// The client signed out: back to onboarding with nothing of the old account on screen.
+    fn reset_after_logout(&mut self) {
         self.connection = ConnectionState::Disconnected;
         self.contact_search.reset();
         self.chat_list = ChatListPane::new();
         self.chat_view = ChatViewPane::new(String::new());
-        self.settings_screen = fresh_settings_screen(&self.client);
+        self.open_peer = None;
+        self.invite = None;
+        self.settings_screen = fresh_settings_screen(&self.account);
         self.onboarding = OnboardingScreen::new();
         self.screen = Screen::Onboarding;
     }
@@ -849,9 +900,9 @@ impl App {
             return frame.render_widget(&mut self.settings_screen, area);
         }
         if matches!(self.screen, Screen::IdentityQr) {
-            let payload = self.settings_screen.invite_payload().map(|s| s.to_owned());
-            let user_id = self.client.user_id().to_string();
-            return self.render_identity_qr_fullscreen(frame, area, payload.as_deref(), &user_id);
+            let invite = self.invite.clone();
+            let user_id = self.account.user_id.clone();
+            return self.render_identity_qr_fullscreen(frame, area, invite.as_ref(), &user_id);
         }
         if matches!(self.screen, Screen::DeviceLink) {
             return frame.render_widget(&self.device_link, area);
@@ -884,19 +935,29 @@ impl App {
         &self,
         frame: &mut Frame,
         area: Rect,
-        payload: Option<&str>,
+        invite: Option<&Result<String, String>>,
         user_id: &str,
     ) {
         let palette = self.theme.palette();
         frame.render_widget(Clear, area);
         frame.render_widget(Block::default().style(palette.canvas()), area);
 
-        let Some(payload) = payload else {
-            let msg = Paragraph::new("Generating invite…")
-                .style(palette.muted())
-                .alignment(Alignment::Center);
-            frame.render_widget(msg, area);
-            return;
+        let payload = match invite {
+            Some(Ok(payload)) => payload.as_str(),
+            Some(Err(e)) => {
+                let msg = Paragraph::new(format!("No invite: {e}"))
+                    .style(palette.muted())
+                    .alignment(Alignment::Center);
+                frame.render_widget(msg, area);
+                return;
+            }
+            None => {
+                let msg = Paragraph::new("Generating invite…")
+                    .style(palette.muted())
+                    .alignment(Alignment::Center);
+                frame.render_widget(msg, area);
+                return;
+            }
         };
 
         // Hint at bottom
@@ -1064,21 +1125,20 @@ impl App {
             connection: &self.connection,
             status_text: &footer_text,
             unread_count: self.chat_list.contacts.iter().map(|c| c.unread).sum(),
-            pq_active: self.client.pq_active(),
+            pq_active: self.account.pq_active,
             theme: self.theme,
         };
         frame.render_widget(status_bar, root[2]);
     }
 }
 
-fn fresh_settings_screen(client: &Client) -> SettingsScreen {
+fn fresh_settings_screen(account: &AccountInfo) -> SettingsScreen {
     SettingsScreen::new(
-        client.server_url(),
-        client.transport_label(),
+        &account.server_url,
+        account.transport_label,
         "—",
         "—",
-        client.pq_active(),
-        "",
+        account.pq_active,
     )
 }
 

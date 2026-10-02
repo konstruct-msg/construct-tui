@@ -2,9 +2,12 @@
 //! contacts — everything this program is, apart from how it is shown.
 //!
 //! Nothing here knows the terminal, the drawing library, the screens or `App`;
-//! `boundary_tests` fails if it starts to. A front end calls the methods below and reads [`ClientEvent`]s from the channel it
-//! handed over; the terminal UI is the first such front end, a desktop window the second
-//! (`decisions/desktop-is-the-tui-client-with-a-second-shell.md`).
+//! `boundary_tests` fails if it starts to.
+//!
+//! The client runs as its own task. A front end holds a [`ClientHandle`], sends it
+//! [`ClientCommand`]s and reads [`ClientEvent`]s — it never calls into the client or waits on it,
+//! so key derivation and opening the database do not freeze the screen, and a second front end
+//! (`decisions/desktop-is-the-tui-client-with-a-second-shell.md`) talks to it the same way.
 
 mod auth;
 mod contacts;
@@ -14,36 +17,166 @@ mod messages;
 mod orchestrator;
 mod tokens;
 
-pub(crate) use auth::{AuthMsg, AuthOutcome};
+pub(crate) use auth::AuthMsg;
 pub(crate) use contacts::{FindStarted, SearchResult};
 
 use tokio::sync::mpsc;
+use zeroize::Zeroizing;
 
 use crate::{
     auth::RegistrationStep,
     bridge::{BridgeEvent, TokenRefreshMsg},
-    config::{Session, SessionKey, TransportConfig},
+    config::{Session, SessionKey, SessionState, TransportConfig},
     grpc::GrpcClient,
+    storage::{StoredContact, StoredMessage},
 };
 
-/// Results of background work, delivered to the front end over one channel.
+/// What a front end asks the client to do.
+pub(crate) enum ClientCommand {
+    /// Restore the plaintext session on disk (legacy / `--no-encrypt`).
+    RestoreFromDisk,
+    /// Open the encrypted session with this passphrase and sign in.
+    Unlock(Zeroizing<Vec<u8>>),
+    /// Register a new account and device.
+    Register {
+        username: String,
+    },
+    /// Link this device to an account with a token from another device.
+    LinkDevice {
+        token: String,
+    },
+    /// Protect the new session with this passphrase and start.
+    SetPassphrase(Zeroizing<Vec<u8>>),
+    SendText {
+        contact_id: String,
+        text: String,
+    },
+    LoadHistory {
+        peer_id: String,
+        limit: usize,
+    },
+    /// A username, or an invite link to redeem.
+    FindContact {
+        query: String,
+    },
+    AddContact {
+        user_id: String,
+        username: String,
+    },
+    DeleteContact {
+        peer_id: String,
+    },
+    SafetyNumber {
+        contact_id: String,
+    },
+    ExportIdentityKey,
+    /// Mint an invite for our QR code.
+    MintInvite,
+    Logout,
+}
+
+/// What the client tells a front end.
 pub(crate) enum ClientEvent {
-    Auth(AuthMsg),
-    TokenRefresh(TokenRefreshMsg),
+    /// Who we are, as far as a front end shows it. Sent whenever it changes.
+    Account(AccountInfo),
+    /// Signed in and running; these are the stored contacts.
+    Started(Vec<StoredContact>),
+    /// A new account is signed in and waits for [`ClientCommand::SetPassphrase`].
+    NeedsPassphrase,
+    /// Signing in failed. `no_session`: there was nothing on disk to restore.
+    AuthFailed {
+        reason: String,
+        no_session: bool,
+    },
+    /// Signed in, but the session could not be saved.
+    SaveFailed(String),
+    UnlockFailed(String),
+    PassphraseFailed(String),
+    RegistrationStep(RegistrationStep),
+    /// Stream status, new messages, session readiness, errors from the engine.
     Bridge(BridgeEvent),
-    /// Result of a FindUser search.
+    SearchStarted(FindStarted),
     ContactSearchResult(Vec<SearchResult>),
     /// A search or an invite redemption failed.
     ContactSearchError(String),
-    /// An invite was redeemed — the front end confirms with [`Client::add_contact`].
+    ContactAdded {
+        user_id: String,
+        username: String,
+    },
+    ContactRemoved {
+        peer_id: String,
+    },
+    /// A message was handed to the engine to send.
+    MessageQueued {
+        contact_id: String,
+        message_id: String,
+        text: String,
+    },
+    History {
+        peer_id: String,
+        messages: Vec<StoredMessage>,
+    },
+    SafetyNumberKeys {
+        contact_id: String,
+        ours: [u8; 32],
+        theirs: [u8; 32],
+    },
+    InviteMinted(Result<String, String>),
+    LoggedOut,
+    /// A one-line message for the user.
+    Notice(String),
+}
+
+/// The account as a front end shows it. No key material.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AccountInfo {
+    pub server_url: String,
+    pub transport_label: &'static str,
+    pub pq_active: bool,
+    pub user_id: String,
+    pub device_id: String,
+    /// A passphrase has unlocked or created the session key.
+    pub has_session_key: bool,
+}
+
+/// The client's inbox: commands from the front end, and results from its own background work.
+enum Inbox {
+    Command(ClientCommand),
+    Auth(AuthMsg),
+    TokenRefresh(TokenRefreshMsg),
+    /// MessageStream got gRPC 16 — refresh the bearer, do not wipe keys.
+    StreamAuthRequired,
+    /// An invite was redeemed; the person is added like any other.
     InviteAccepted {
         user_id: String,
         username: String,
     },
-    /// A registration step completed.
-    RegistrationStep(RegistrationStep),
-    /// MessageStream got gRPC 16 — refresh the bearer, do not wipe keys.
-    StreamAuthRequired,
+}
+
+/// The front end's end of the client: send commands, nothing else.
+#[derive(Clone)]
+pub(crate) struct ClientHandle {
+    inbox: mpsc::UnboundedSender<Inbox>,
+}
+
+impl ClientHandle {
+    pub(crate) fn send(&self, command: ClientCommand) {
+        let _ = self.inbox.send(Inbox::Command(command));
+    }
+}
+
+/// Start the client task. Its events arrive on `events`.
+pub(crate) fn spawn(cfg: ClientConfig, events: mpsc::UnboundedSender<ClientEvent>) -> ClientHandle {
+    let (inbox_tx, inbox_rx) = mpsc::unbounded_channel();
+    let client = Client::new(cfg, events, inbox_tx.clone());
+    tokio::spawn(client.run(inbox_rx));
+    ClientHandle { inbox: inbox_tx }
+}
+
+/// What is on disk: an encrypted session, a plaintext one, or none. Read before the client is
+/// asked for anything, to choose the first screen.
+pub(crate) fn stored_session_state() -> SessionState {
+    crate::config::detect_session()
 }
 
 /// Configuration derived from the config file and CLI overrides.
@@ -62,6 +195,8 @@ pub(crate) struct Client {
     pq_active: bool,
     grpc: GrpcClient,
     events: mpsc::UnboundedSender<ClientEvent>,
+    /// Where background work started here reports back.
+    inbox: mpsc::UnboundedSender<Inbox>,
     /// Derived key material for the active session (zeroized on drop / logout). `None` in
     /// `--no-encrypt` mode or before a passphrase is entered.
     session_key: Option<SessionKey>,
@@ -83,7 +218,11 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    pub(crate) fn new(cfg: ClientConfig, events: mpsc::UnboundedSender<ClientEvent>) -> Self {
+    fn new(
+        cfg: ClientConfig,
+        events: mpsc::UnboundedSender<ClientEvent>,
+        inbox: mpsc::UnboundedSender<Inbox>,
+    ) -> Self {
         Self {
             grpc: GrpcClient::new(&cfg.server_url),
             server_url: cfg.server_url,
@@ -91,6 +230,7 @@ impl Client {
             no_encrypt: cfg.no_encrypt,
             pq_active: cfg.pq_active,
             events,
+            inbox,
             session_key: None,
             current_session: None,
             pending_session: None,
@@ -105,32 +245,51 @@ impl Client {
         }
     }
 
-    // ── Read-only state ─────────────────────────────────────────────────────────
+    async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<Inbox>) {
+        self.emit(ClientEvent::Account(self.account_info()));
+        while let Some(message) = inbox.recv().await {
+            match message {
+                Inbox::Command(command) => self.handle(command),
+                Inbox::Auth(msg) => self.apply_auth(msg),
+                Inbox::TokenRefresh(msg) => self.apply_token_refresh(msg),
+                Inbox::StreamAuthRequired => self.refresh_token_now(),
+                Inbox::InviteAccepted { user_id, username } => self.add_contact(user_id, username),
+            }
+        }
+    }
 
-    pub(crate) fn server_url(&self) -> &str {
-        &self.server_url
+    fn handle(&mut self, command: ClientCommand) {
+        match command {
+            ClientCommand::RestoreFromDisk => self.restore_from_disk(),
+            ClientCommand::Unlock(passphrase) => self.unlock(&passphrase),
+            ClientCommand::Register { username } => self.register(username),
+            ClientCommand::LinkDevice { token } => self.link_device(token),
+            ClientCommand::SetPassphrase(passphrase) => self.set_passphrase(&passphrase),
+            ClientCommand::SendText { contact_id, text } => self.send_text(contact_id, text),
+            ClientCommand::LoadHistory { peer_id, limit } => self.load_history(peer_id, limit),
+            ClientCommand::FindContact { query } => self.find_contact(&query),
+            ClientCommand::AddContact { user_id, username } => self.add_contact(user_id, username),
+            ClientCommand::DeleteContact { peer_id } => self.delete_contact(peer_id),
+            ClientCommand::SafetyNumber { contact_id } => self.safety_number(contact_id),
+            ClientCommand::ExportIdentityKey => self.export_identity_key(),
+            ClientCommand::MintInvite => self.mint_invite(),
+            ClientCommand::Logout => self.logout(),
+        }
     }
-    pub(crate) fn transport_label(&self) -> &'static str {
-        transport_label(&self.transport)
+
+    fn emit(&self, event: ClientEvent) {
+        let _ = self.events.send(event);
     }
-    pub(crate) fn pq_active(&self) -> bool {
-        self.pq_active
-    }
-    pub(crate) fn user_id(&self) -> &str {
-        &self.user_id
-    }
-    pub(crate) fn device_id(&self) -> &str {
-        &self.device_id
-    }
-    /// A passphrase has unlocked or created the session key.
-    pub(crate) fn has_session_key(&self) -> bool {
-        self.session_key.is_some()
-    }
-    pub(crate) fn signing_key_hex(&self) -> &str {
-        self.current_session
-            .as_ref()
-            .map(|s| s.signing_key_hex.as_str())
-            .unwrap_or("")
+
+    fn account_info(&self) -> AccountInfo {
+        AccountInfo {
+            server_url: self.server_url.clone(),
+            transport_label: transport_label(&self.transport),
+            pq_active: self.pq_active,
+            user_id: self.user_id.clone(),
+            device_id: self.device_id.clone(),
+            has_session_key: self.session_key.is_some(),
+        }
     }
 }
 

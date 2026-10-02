@@ -127,6 +127,7 @@ impl Client {
             orch_handle,
             cursor,
             self.events.clone(),
+            self.inbox.clone(),
             identity_secret_for_sealed,
         );
         Ok(contacts)
