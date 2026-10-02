@@ -60,7 +60,6 @@ pub async fn register_device(
             nonce: pow.nonce,
             hash: pow.hash,
         }),
-        ..Default::default()
     };
     let bytes = client
         .unary(paths::AUTH_REGISTER, &req.encode_to_vec())

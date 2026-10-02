@@ -1,8 +1,11 @@
 //! Device-minted contact invites — same wire as iOS / Android.
 //!
-//! Protocol **v5**: signed TTL, no `ephKey`. On-the-wire container **CIv1**
-//! (compact binary). URL: `https://konstruct.cc/add?invite=<base64url(CIv1)>`
-//! (also `konstruct://add?invite=`). Dual-read: legacy base64(JSON) v3/v4.
+//! Protocol **v5**: signed TTL and signed account address (`addr`, the issuing account's
+//! Ed25519 recovery public key). On-the-wire container **CIv1** (compact binary). URL:
+//! `https://konstruct.cc/add?invite=<base64url(CIv1)>` (also `konstruct://add?invite=`).
+//! v1–v4 are refused, as on iOS and the server since 2026-09-28
+//! (`decisions/invite-carries-the-account-address.md`). Fixed by
+//! `construct-protos/conformance/knst_invite.json`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,6 +24,8 @@ pub const MIN_TTL_SECONDS: u32 = 60;
 const MAX_FUTURE_SKEW: i64 = 300;
 const MAGIC: &[u8; 4] = b"CIv1";
 const FLAG_HAS_USERNAME: u8 = 0x01;
+/// An account address is a 32-byte Ed25519 public key.
+pub const ADDR_LEN: usize = 32;
 const HTTPS_ADD: &str = "https://konstruct.cc/add?invite=";
 #[allow(dead_code)]
 const SCHEME_ADD: &str = "konstruct://add?invite=";
@@ -32,63 +37,40 @@ pub struct Invite {
     pub uuid: String,
     pub device_id: String,
     pub server: String,
-    pub eph_key: String,
     pub ts: i64,
     pub sig: String,
     pub un: Option<String>,
     pub ttl: Option<u32>,
+    /// The issuing account's address. Signed; the redeemer addresses later messages to it.
+    pub addr: Vec<u8>,
 }
 
 impl Invite {
     pub fn canonical_string(&self) -> Result<String> {
         let jti = self.jti.to_lowercase();
         let uuid = self.uuid.to_lowercase();
-        Ok(match self.v {
-            1 => format!(
-                "{}|{}|{}|{}|{}|{}",
-                self.v, jti, uuid, self.server, self.eph_key, self.ts
-            ),
-            2 => format!(
-                "{}|{}|{}|{}|{}|{}|{}",
-                self.v, jti, uuid, self.device_id, self.server, self.eph_key, self.ts
-            ),
-            3 => format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}",
-                self.v,
-                jti,
-                uuid,
-                self.device_id,
-                self.server,
-                self.eph_key,
-                self.ts,
-                self.un.as_deref().unwrap_or("")
-            ),
-            4 => format!(
-                "{}|{}|{}|{}|{}|{}|{}",
-                self.v,
-                jti,
-                uuid,
-                self.device_id,
-                self.server,
-                self.ts,
-                self.un.as_deref().unwrap_or("")
-            ),
-            5 => {
-                let ttl = self.ttl.context("v5 invite without ttl")?;
-                format!(
-                    "{}|{}|{}|{}|{}|{}|{}|{}",
-                    self.v,
-                    jti,
-                    uuid,
-                    self.device_id,
-                    self.server,
-                    self.ts,
-                    self.un.as_deref().unwrap_or(""),
-                    ttl
-                )
-            }
-            other => bail!("unsupported invite version {other}"),
-        })
+        anyhow::ensure!(
+            self.v == CURRENT_VERSION,
+            "invite v{} refused — v5 only",
+            self.v
+        );
+        anyhow::ensure!(
+            self.addr.len() == ADDR_LEN,
+            "invite address must be 32 bytes"
+        );
+        let ttl = self.ttl.context("v5 invite without ttl")?;
+        Ok(format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            self.v,
+            jti,
+            uuid,
+            self.device_id,
+            self.server,
+            self.ts,
+            self.un.as_deref().unwrap_or(""),
+            ttl,
+            hex::encode(&self.addr)
+        ))
     }
 
     pub fn effective_ttl(&self) -> u32 {
@@ -128,11 +110,6 @@ impl Invite {
         out.extend_from_slice(&jti);
         out.extend_from_slice(&uuid);
         out.extend_from_slice(&device);
-        if self.v <= 3 {
-            let eph = B64.decode(&self.eph_key).context("ephKey")?;
-            anyhow::ensure!(eph.len() == 32, "ephKey must be 32 bytes");
-            out.extend_from_slice(&eph);
-        }
         out.extend_from_slice(&u64::try_from(self.ts)?.to_be_bytes());
         out.extend_from_slice(&sig);
         out.push(server.len() as u8);
@@ -141,10 +118,13 @@ impl Invite {
             out.push(b.len() as u8);
             out.extend_from_slice(b);
         }
-        if self.v >= 5 {
-            let ttl = self.ttl.context("v5 invite without ttl")?;
-            out.extend_from_slice(&ttl.to_be_bytes());
-        }
+        let ttl = self.ttl.context("v5 invite without ttl")?;
+        out.extend_from_slice(&ttl.to_be_bytes());
+        anyhow::ensure!(
+            self.addr.len() == ADDR_LEN,
+            "invite address must be 32 bytes"
+        );
+        out.extend_from_slice(&self.addr);
         Ok(out)
     }
 
@@ -173,13 +153,10 @@ pub fn looks_like_invite(raw: &str) -> bool {
 pub fn parse_invite(raw: &str) -> Result<Invite> {
     let trimmed = raw.trim();
     let payload = extract_invite_param(trimmed).unwrap_or(trimmed);
-    if let Ok(bytes) = decode_payload(payload) {
-        if bytes.starts_with(MAGIC) {
-            return decode_binary(&bytes);
-        }
-        if let Ok(inv) = decode_legacy_json(&bytes) {
-            return Ok(inv);
-        }
+    if let Ok(bytes) = decode_payload(payload)
+        && bytes.starts_with(MAGIC)
+    {
+        return decode_binary(&bytes);
     }
     bail!("unrecognized invite payload")
 }
@@ -206,14 +183,10 @@ fn decode_binary(data: &[u8]) -> Result<Invite> {
     anyhow::ensure!(magic == MAGIC, "bad CIv1 magic");
     let flags = r.u8()?;
     let v = r.u8()?;
+    anyhow::ensure!(v == CURRENT_VERSION, "invite v{v} refused — v5 only");
     let jti = uuid_string(r.take(16)?)?;
     let uuid = uuid_string(r.take(16)?)?;
     let device_id = hex::encode(r.take(16)?);
-    let eph_key = if v <= 3 {
-        B64.encode(r.take(32)?)
-    } else {
-        String::new()
-    };
     let ts_bytes: [u8; 8] = r.take(8)?.try_into().map_err(|_| anyhow::anyhow!("ts"))?;
     let ts = i64::from_be_bytes(ts_bytes);
     let sig = B64.encode(r.take(64)?);
@@ -225,74 +198,41 @@ fn decode_binary(data: &[u8]) -> Result<Invite> {
     } else {
         None
     };
-    let ttl = if v >= 5 {
-        let ttl_bytes: [u8; 4] = r.take(4)?.try_into().map_err(|_| anyhow::anyhow!("ttl"))?;
-        Some(u32::from_be_bytes(ttl_bytes))
-    } else {
-        None
-    };
+    let ttl_bytes: [u8; 4] = r.take(4)?.try_into().map_err(|_| anyhow::anyhow!("ttl"))?;
+    let ttl = u32::from_be_bytes(ttl_bytes);
+    let addr = r.take(ADDR_LEN)?.to_vec();
     anyhow::ensure!(r.at_end(), "trailing bytes");
     let now = now_unix();
     anyhow::ensure!(ts > 0 && ts <= now + MAX_FUTURE_SKEW, "invalid timestamp");
-    if v >= 5 {
-        let t = ttl.context("v5 invite without ttl")?;
-        anyhow::ensure!(t >= MIN_TTL_SECONDS, "ttl {t}s below floor");
-    }
+    anyhow::ensure!(ttl >= MIN_TTL_SECONDS, "ttl {ttl}s below floor");
     Ok(Invite {
         v,
         jti,
         uuid,
         device_id,
         server,
-        eph_key,
         ts,
         sig,
         un,
-        ttl,
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct LegacyJson {
-    v: u8,
-    jti: String,
-    uuid: String,
-    #[serde(rename = "deviceId")]
-    device_id: String,
-    server: String,
-    #[serde(rename = "ephKey", default)]
-    eph_key: String,
-    ts: i64,
-    sig: String,
-    #[serde(default)]
-    un: Option<String>,
-    #[serde(default)]
-    ttl: Option<u32>,
-}
-
-fn decode_legacy_json(bytes: &[u8]) -> Result<Invite> {
-    let j: LegacyJson = serde_json::from_slice(bytes)?;
-    Ok(Invite {
-        v: j.v,
-        jti: j.jti,
-        uuid: j.uuid,
-        device_id: j.device_id,
-        server: j.server,
-        eph_key: j.eph_key,
-        ts: j.ts,
-        sig: j.sig,
-        un: j.un,
-        ttl: j.ttl,
+        ttl: Some(ttl),
+        addr,
     })
 }
 
 /// Mint a v5 QR invite (ttl 300s) as an HTTPS add-link iOS can open.
+///
+/// `addr` is the account's address (its recovery public key). This client does not create a
+/// recovery key yet, so it has no address and cannot mint an invite the server accepts — the
+/// server refuses an `addr` that is not the account's recovery key.
 pub fn generate_invite_qr(
     user_id: &str,
     device_id: &str,
     server_url: &str,
     signing_key_hex: &str,
+    addr: Option<&[u8]>,
 ) -> Result<String> {
+    let addr =
+        addr.context("this account has no address (no recovery key) — cannot mint an invite")?;
     mint(
         user_id,
         device_id,
@@ -300,6 +240,7 @@ pub fn generate_invite_qr(
         signing_key_hex,
         None,
         QR_TTL_SECONDS,
+        addr,
     )?
     .https_link()
 }
@@ -311,8 +252,10 @@ pub fn mint(
     signing_key_hex: &str,
     username: Option<&str>,
     ttl: u32,
+    addr: &[u8],
 ) -> Result<Invite> {
     anyhow::ensure!(ttl >= MIN_TTL_SECONDS, "ttl {ttl}s below floor");
+    anyhow::ensure!(addr.len() == ADDR_LEN, "invite address must be 32 bytes");
     let uuid = Uuid::parse_str(user_id)
         .context("user id")?
         .to_string()
@@ -329,7 +272,6 @@ pub fn mint(
         uuid,
         device_id: device,
         server: normalize_server(server_url),
-        eph_key: String::new(),
         ts,
         sig: String::new(),
         un: username
@@ -337,6 +279,7 @@ pub fn mint(
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         ttl: Some(ttl),
+        addr: addr.to_vec(),
     };
     let canonical = unsigned.canonical_string()?;
     let sk_bytes = hex::decode(signing_key_hex).context("signing key hex")?;
@@ -418,11 +361,11 @@ mod tests {
             uuid: "22222222-2222-4222-8222-222222222222".into(),
             device_id: "0123456789abcdef0123456789abcdef".into(),
             server: "konstruct.cc".into(),
-            eph_key: String::new(),
             ts: 1_700_000_000,
             sig: B64.encode([0xABu8; 64]),
             un: Some("fox".into()),
             ttl: Some(300),
+            addr: vec![0x3d; ADDR_LEN],
         }
     }
 
@@ -431,7 +374,7 @@ mod tests {
         let inv = sample();
         assert_eq!(
             inv.canonical_string().unwrap(),
-            "5|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|0123456789abcdef0123456789abcdef|konstruct.cc|1700000000|fox|300"
+            "5|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222222|0123456789abcdef0123456789abcdef|konstruct.cc|1700000000|fox|300|3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d"
         );
     }
 
@@ -467,11 +410,11 @@ mod tests {
             &hex,
             None,
             300,
+            &[0x3d; ADDR_LEN],
         )
         .unwrap();
         assert_eq!(inv.v, 5);
         assert_eq!(inv.server, "ams.konstruct.cc");
-        assert!(inv.eph_key.is_empty());
         let canon = inv.canonical_string().unwrap();
         let sig = ed25519_dalek::Signature::from_slice(&B64.decode(&inv.sig).unwrap()).unwrap();
         VerifyingKey::from(&sk)
@@ -479,6 +422,67 @@ mod tests {
             .unwrap();
         let again = parse_invite(&inv.https_link().unwrap()).unwrap();
         assert_eq!(again.uuid, inv.uuid);
+    }
+
+    /// The shared vectors iOS, Android and the server are checked against: canonical string,
+    /// signature and CIv1 bytes for the valid ones; the refused ones must not decode. Until
+    /// 2026-10-02 this client signed v5 without `addr` and read v1–v4.
+    #[test]
+    fn invite_vectors_match_the_shared_conformance_file() {
+        const VECTORS: &str = include_str!(concat!(
+            env!("CONSTRUCT_PROTOS_DIR"),
+            "/conformance/knst_invite.json"
+        ));
+        let doc: serde_json::Value = serde_json::from_str(VECTORS).unwrap();
+        let seed: [u8; 32] = hex::decode(doc["signing_seed"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let sk = SigningKey::from_bytes(&seed);
+        for case in doc["valid"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let f = &case["fields"];
+            let binary = hex::decode(case["binary"].as_str().unwrap()).unwrap();
+            let decoded = decode_binary(&binary).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(decoded.jti, f["jti"].as_str().unwrap(), "{name}");
+            assert_eq!(decoded.uuid, f["uuid"].as_str().unwrap(), "{name}");
+            assert_eq!(
+                decoded.device_id,
+                f["device_id"].as_str().unwrap(),
+                "{name}"
+            );
+            assert_eq!(decoded.server, f["server"].as_str().unwrap(), "{name}");
+            assert_eq!(decoded.ts, f["ts"].as_i64().unwrap(), "{name}");
+            assert_eq!(
+                decoded.ttl,
+                Some(f["ttl"].as_u64().unwrap() as u32),
+                "{name}"
+            );
+            assert_eq!(
+                hex::encode(&decoded.addr),
+                f["addr"].as_str().unwrap(),
+                "{name}"
+            );
+            assert_eq!(decoded.un.as_deref(), f["un"].as_str(), "{name}");
+            let canonical = decoded.canonical_string().unwrap();
+            assert_eq!(canonical, case["canonical"].as_str().unwrap(), "{name}");
+            let sig = sk.sign(canonical.as_bytes());
+            assert_eq!(
+                hex::encode(sig.to_bytes()),
+                case["signature"].as_str().unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                decoded.encode_binary().unwrap(),
+                binary,
+                "{name}: re-encode"
+            );
+        }
+        for case in doc["refused"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let binary = hex::decode(case["binary"].as_str().unwrap()).unwrap();
+            assert!(decode_binary(&binary).is_err(), "{name} must be refused");
+        }
     }
 
     #[test]

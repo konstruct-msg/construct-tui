@@ -869,11 +869,10 @@ impl App {
                                         message_id: message_id.clone(),
                                         from: from.clone(),
                                         data: wire_payload,
-                                        msg_num,
-                                        kem_ct: decoded.kem_ciphertext.unwrap_or_default(),
-                                        otpk_id: decoded.one_time_prekey_id,
                                         sender_certificate: inbound.sender_certificate.clone(),
                                         content_type,
+                                        // This client does not open session envelopes yet.
+                                        envelope_session: None,
                                     },
                                     StreamMessageContext {
                                         contact_id: sender_user_id.clone(),
@@ -901,11 +900,9 @@ impl App {
                                             message_id: message_id.clone(),
                                             from: from.clone(),
                                             data: wire_payload,
-                                            msg_num: 0,
-                                            kem_ct: Vec::new(),
-                                            otpk_id: 0,
                                             sender_certificate: inbound.sender_certificate.clone(),
                                             content_type,
+                                            envelope_session: None,
                                         },
                                         StreamMessageContext {
                                             contact_id: sender_user_id,
@@ -2380,7 +2377,8 @@ mod tests {
             .expect("sealed envelope should resolve");
 
         assert_eq!(resolved.message_id, "msg-1");
-        assert_eq!(resolved.from, "sender-user");
+        // The core keys sessions by device since bfe444a, so `from` is the certificate's device.
+        assert_eq!(resolved.from, "sender-device");
         assert_eq!(resolved.wire_payload, wire_payload);
         assert_eq!(resolved.content_type, 13);
         assert!(resolved.is_sealed);

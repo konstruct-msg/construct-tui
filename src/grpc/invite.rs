@@ -24,10 +24,12 @@ pub async fn accept_invite(
         device_id: Some(invite.device_id.clone()),
         server: invite.server.clone(),
         ts: invite.ts,
-        eph_pub: invite.eph_key.clone(),
+        // v5 has no ephemeral key; the field stays for the wire's older versions.
+        eph_pub: String::new(),
         sig: invite.sig.clone(),
         un: invite.un.clone(),
         ttl: invite.ttl,
+        addr: invite.addr.clone().into(),
     };
     let req = AcceptInviteRequest {
         invite: Some(token),

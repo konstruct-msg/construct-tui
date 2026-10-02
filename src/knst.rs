@@ -19,9 +19,7 @@ use prost::Message;
 use uuid::Uuid;
 
 use crate::proto::core::v1::ContentType;
-use crate::proto::messaging::v1::{
-    MessageContent, SessionControl, SessionOp, TextMessage, message_content,
-};
+use crate::proto::messaging::v1::{MessageContent, TextMessage, message_content};
 
 pub const MAGIC: &[u8; 4] = b"KNST";
 pub const VERSION: u8 = 0x01;
@@ -40,6 +38,10 @@ pub const CONTENT_SESSION_RESET: u8 = ContentType::SessionReset as u8;
 pub const CONTENT_SENDER_SYNC: u8 = ContentType::SenderSync as u8;
 pub const CONTENT_SESSION_RESET_INIT: u8 = ContentType::SessionResetInit as u8;
 pub const CONTENT_SESSION_PING: u8 = ContentType::SessionPing as u8;
+/// A profile card riding beside a message; never a bubble (`framed_side_channel: contact_card`).
+pub const CONTENT_CONTACT_CARD: u8 = ContentType::ContactCard as u8;
+/// "I could not read your message", answered by the core; never a bubble.
+pub const CONTENT_DECRYPTION_ERROR: u8 = ContentType::DecryptionError as u8;
 pub const CONTENT_SESSION_READY: u8 = ContentType::SessionReady as u8;
 
 /// Wrap UTF-8 chat text as a single-chunk KNST frame carrying `MessageContent`.
@@ -52,19 +54,6 @@ pub fn encode_text(text: &str, message_id: &str) -> Vec<u8> {
         ..Default::default()
     };
     frame_whole(&content.encode_to_vec(), CONTENT_E2EE_SIGNAL, message_id)
-}
-
-/// Wrap a `SessionControl{op=PING}` so the peer can init as RESPONDER.
-///
-/// Type rides in KNST byte 5; the gRPC envelope stays a generic E2EE signal
-/// (iOS `frameAs: 25`).
-pub fn encode_session_ping(message_id: &str) -> Vec<u8> {
-    let control = SessionControl {
-        op: SessionOp::Ping as i32,
-        nonce: message_id.to_owned(),
-        reason: 0,
-    };
-    frame_whole(&control.encode_to_vec(), CONTENT_SESSION_PING, message_id)
 }
 
 /// Single-frame KNST (never split). Matches iOS `ChunkedMessageCodec.frameWhole`.
@@ -144,7 +133,9 @@ pub fn disposition(content_type: u8) -> Disposition {
         | CONTENT_SESSION_RESET
         | CONTENT_SESSION_RESET_INIT
         | CONTENT_SESSION_PING
-        | CONTENT_SESSION_READY => Disposition::SilentControl,
+        | CONTENT_SESSION_READY
+        | CONTENT_CONTACT_CARD
+        | CONTENT_DECRYPTION_ERROR => Disposition::SilentControl,
         _ => Disposition::NotCarried,
     }
 }
@@ -167,15 +158,6 @@ mod tests {
         assert_eq!(&framed[22..24], &[0, 0]);
         assert_eq!(&framed[24..26], &[0, 1]);
         assert_eq!(decode_text(&framed), "hello from tui");
-    }
-
-    #[test]
-    fn session_ping_is_not_chat_text() {
-        let id = "11111111-1111-1111-1111-111111111111";
-        let framed = encode_session_ping(id);
-        assert_eq!(framed[5], CONTENT_SESSION_PING);
-        assert!(decode_text(&framed).is_empty());
-        assert!(SessionControl::decode(&framed[HEADER_SIZE..]).is_ok());
     }
 
     #[test]
