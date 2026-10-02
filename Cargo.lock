@@ -564,6 +564,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
+name = "construct-client"
+version = "0.2.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "async-stream",
+ "base64",
+ "bytes",
+ "construct-core",
+ "dirs",
+ "ed25519-dalek",
+ "futures",
+ "h2",
+ "hex",
+ "hkdf",
+ "http",
+ "prost",
+ "prost-build",
+ "rand",
+ "rusqlite",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "signature 2.2.0",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+ "webpki-roots 0.26.11",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "construct-core"
 version = "0.28.0"
 dependencies = [
@@ -600,45 +640,21 @@ dependencies = [
 name = "construct-tui"
 version = "0.2.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
- "argon2",
- "async-stream",
- "base64",
- "bytes",
  "clap",
- "construct-core",
+ "construct-client",
  "crossterm 0.28.1",
  "dirs",
- "ed25519-dalek",
  "futures",
- "h2",
- "hex",
- "hkdf",
- "http",
- "prost",
- "prost-build",
  "qrcode",
- "rand",
  "ratatui",
- "rusqlite",
- "rustls",
- "rustls-native-certs",
  "serde",
- "serde_bytes",
  "serde_json",
- "sha2",
- "signature 2.2.0",
- "thiserror 2.0.20",
  "tokio",
- "tokio-rustls",
- "tokio-stream",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
- "webpki-roots 0.26.11",
- "x25519-dalek",
  "zeroize",
 ]
 

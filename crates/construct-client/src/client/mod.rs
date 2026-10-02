@@ -1,9 +1,6 @@
 //! The client layer: account, session keys, the orchestrator, the message stream, storage and
 //! contacts — everything this program is, apart from how it is shown.
 //!
-//! Nothing here knows the terminal, the drawing library, the screens or `App`;
-//! `boundary_tests` fails if it starts to.
-//!
 //! The client runs as its own task. A front end holds a [`ClientHandle`], sends it
 //! [`ClientCommand`]s and reads [`ClientEvent`]s — it never calls into the client or waits on it,
 //! so key derivation and opening the database do not freeze the screen, and a second front end
@@ -18,7 +15,7 @@ mod orchestrator;
 mod tokens;
 
 pub(crate) use auth::AuthMsg;
-pub(crate) use contacts::{FindStarted, SearchResult};
+pub use contacts::{FindStarted, SearchResult};
 
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
@@ -32,7 +29,7 @@ use crate::{
 };
 
 /// What a front end asks the client to do.
-pub(crate) enum ClientCommand {
+pub enum ClientCommand {
     /// Restore the plaintext session on disk (legacy / `--no-encrypt`).
     RestoreFromDisk,
     /// Open the encrypted session with this passphrase and sign in.
@@ -76,7 +73,7 @@ pub(crate) enum ClientCommand {
 }
 
 /// What the client tells a front end.
-pub(crate) enum ClientEvent {
+pub enum ClientEvent {
     /// Who we are, as far as a front end shows it. Sent whenever it changes.
     Account(AccountInfo),
     /// Signed in and running; these are the stored contacts.
@@ -116,10 +113,10 @@ pub(crate) enum ClientEvent {
         peer_id: String,
         messages: Vec<StoredMessage>,
     },
-    SafetyNumberKeys {
+    /// The safety number with a contact, computed by the core.
+    SafetyNumber {
         contact_id: String,
-        ours: [u8; 32],
-        theirs: [u8; 32],
+        number: String,
     },
     InviteMinted(Result<String, String>),
     LoggedOut,
@@ -129,7 +126,7 @@ pub(crate) enum ClientEvent {
 
 /// The account as a front end shows it. No key material.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct AccountInfo {
+pub struct AccountInfo {
     pub server_url: String,
     pub transport_label: &'static str,
     pub pq_active: bool,
@@ -155,18 +152,18 @@ enum Inbox {
 
 /// The front end's end of the client: send commands, nothing else.
 #[derive(Clone)]
-pub(crate) struct ClientHandle {
+pub struct ClientHandle {
     inbox: mpsc::UnboundedSender<Inbox>,
 }
 
 impl ClientHandle {
-    pub(crate) fn send(&self, command: ClientCommand) {
+    pub fn send(&self, command: ClientCommand) {
         let _ = self.inbox.send(Inbox::Command(command));
     }
 }
 
 /// Start the client task. Its events arrive on `events`.
-pub(crate) fn spawn(cfg: ClientConfig, events: mpsc::UnboundedSender<ClientEvent>) -> ClientHandle {
+pub fn spawn(cfg: ClientConfig, events: mpsc::UnboundedSender<ClientEvent>) -> ClientHandle {
     let (inbox_tx, inbox_rx) = mpsc::unbounded_channel();
     let client = Client::new(cfg, events, inbox_tx.clone());
     tokio::spawn(client.run(inbox_rx));
@@ -175,7 +172,7 @@ pub(crate) fn spawn(cfg: ClientConfig, events: mpsc::UnboundedSender<ClientEvent
 
 /// What is on disk: an encrypted session, a plaintext one, or none. Read before the client is
 /// asked for anything, to choose the first screen.
-pub(crate) fn stored_session_state() -> SessionState {
+pub fn stored_session_state() -> SessionState {
     crate::config::detect_session()
 }
 
@@ -293,62 +290,11 @@ impl Client {
     }
 }
 
-pub(crate) fn transport_label(t: &TransportConfig) -> &'static str {
+pub fn transport_label(t: &TransportConfig) -> &'static str {
     match t {
         TransportConfig::Direct => "direct",
         TransportConfig::Obfs4 { .. } => "obfs4",
         TransportConfig::Obfs4Tls { .. } => "obfs4+tls",
         TransportConfig::CdnFront { .. } => "cdn-front",
-    }
-}
-
-/// The client layer must not know how it is shown. A front-end type here would tie the desktop
-/// shell to the terminal one, which is the coupling this module exists to remove.
-#[cfg(test)]
-mod boundary_tests {
-    const SOURCES: &[(&str, &str)] = &[
-        ("client/mod.rs", include_str!("mod.rs")),
-        ("client/auth.rs", include_str!("auth.rs")),
-        ("client/contacts.rs", include_str!("contacts.rs")),
-        ("client/identity.rs", include_str!("identity.rs")),
-        ("client/inbound.rs", include_str!("inbound.rs")),
-        ("client/messages.rs", include_str!("messages.rs")),
-        ("client/orchestrator.rs", include_str!("orchestrator.rs")),
-        ("client/tokens.rs", include_str!("tokens.rs")),
-    ];
-    const FORBIDDEN: &[&str] = &[
-        "ratatui",
-        "crossterm",
-        "crate::screens",
-        "crate::app",
-        "crate::tui",
-    ];
-
-    #[test]
-    fn the_client_layer_imports_no_front_end() {
-        for (file, source) in SOURCES {
-            // Only code above the test modules counts — the list itself names the forbidden.
-            let code = source.split("#[cfg(test)]").next().unwrap_or(source);
-            for needle in FORBIDDEN {
-                assert!(!code.contains(needle), "{file} mentions `{needle}`");
-            }
-        }
-    }
-
-    /// A file added to `client/` and not to `SOURCES` would sit outside the check above.
-    #[test]
-    fn every_client_file_is_checked() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/client");
-        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".rs"))
-            .map(|n| format!("client/{n}"))
-            .collect();
-        let mut listed: Vec<String> = SOURCES.iter().map(|(f, _)| f.to_string()).collect();
-        on_disk.sort();
-        listed.sort();
-        assert_eq!(on_disk, listed, "add the new file to SOURCES");
     }
 }

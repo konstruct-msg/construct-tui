@@ -126,3 +126,34 @@ impl Palette {
             .style(self.surface())
     }
 }
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+
+/// Front-end preferences, beside the client's own config in the same directory. Until
+/// 2026-10-02 the theme was a field of the client's `config.json`; the client crate knows no
+/// theme, so it lives in its own file now (an old `config.json` theme is not carried over).
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct UiPrefs {
+    #[serde(default)]
+    theme: ThemeMode,
+}
+
+fn prefs_path() -> anyhow::Result<std::path::PathBuf> {
+    Ok(construct_client::config::config_dir()?.join("ui.json"))
+}
+
+/// The saved theme, or the default when there is none or it cannot be read.
+pub fn load_theme() -> ThemeMode {
+    prefs_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<UiPrefs>(&s).ok())
+        .map(|p| p.theme)
+        .unwrap_or_default()
+}
+
+pub fn save_theme(theme: ThemeMode) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(&UiPrefs { theme })?;
+    std::fs::write(prefs_path()?, json)?;
+    Ok(())
+}

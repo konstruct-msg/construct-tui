@@ -45,9 +45,9 @@ problem.
 ```bash
 cargo build --release              # binary at target/release/konstruct
 cargo run
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo fmt
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all
 ```
 
 Default features include `post-quantum`. There is **no** `ice` feature. `construct-ice` is
@@ -55,27 +55,39 @@ gone; do not add a `[patch]` for it — a gitignored `.cargo/config.toml` pointi
 `../construct-ice` is what made `cargo check --offline` fail on a repo that no longer
 exists.
 
-Do not copy `.proto` files into this repo. `build.rs` reads `CONSTRUCT_PROTOS_DIR`, default
-`../construct-protos`.
+Do not copy `.proto` files into this repo. `crates/construct-client/build.rs` reads
+`CONSTRUCT_PROTOS_DIR`, default `../../../construct-protos` (a sibling of this checkout).
+
+A workspace of two crates since 2026-10-02: the root package is the `konstruct` binary (the
+terminal front end), `crates/construct-client` is everything else. Without `--workspace`, `cargo
+test` and `cargo clippy` check only the binary.
 
 ---
 
 ## Architecture invariants
 
 ```
-screens/  →  app.rs  (terminal front end: screens, keys, drawing)
-               └── client/  (the client layer: account, keys, contacts, stream relay)
-                     ├── orchestrator_task.rs  →  construct-core Orchestrator
-                     └── grpc/                 →  gRPC-over-H2 (system-root TLS; ams.konstruct.cc)
+konstruct (src/)                     the terminal front end: screens, keys, drawing, theme
+  app.rs  ── ClientCommand ──▶  construct-client (crates/construct-client)
+          ◀── ClientEvent ───     client/            the client task: account, keys, contacts
+                                  orchestrator_task  → construct-core Orchestrator
+                                  grpc/              → gRPC-over-H2 (system-root TLS; ams.konstruct.cc)
 ```
 
-- **`client/` knows no front end.** No Ratatui, no crossterm, no `screens`, no `App` —
-  `client::boundary_tests` fails on any of them. The client runs as its own task: `app.rs`
-  sends `ClientCommand`s through a `ClientHandle` and turns `ClientEvent`s into what is on
-  screen — it never calls into the client or waits on it. Key material stays in the client
-  (the invite is minted there; the settings screen held the signing key until 2026-10-02); a decision made in `app.rs` is one the desktop shell
-  would have to make again. Since 2026-10-02 (`decisions/desktop-is-the-tui-client-with-a-second-shell.md`):
-  Linux and Windows get a second front end on the same `client/`, not a second client.
+- **`construct-client` knows no front end, and the compiler holds that line.** It has no
+  Ratatui, crossterm or windowing dependency (`tests::the_client_crate_depends_on_no_front_end`
+  reads its manifest), and it cannot name the binary's modules. The client runs as its own
+  task: `app.rs` sends `ClientCommand`s through a `ClientHandle` and turns `ClientEvent`s into
+  what is on screen — it never calls into the client or waits on it.
+- **Nothing that two clients must compute identically lives in the front end.** Key material
+  stays in the client (the invite is minted there; the settings screen held the signing key
+  until 2026-10-02), and the safety number is the core's (`compute_safety_number` over device
+  ids, the one iOS shows) — the front end computed its own until 2026-10-02 and could never
+  have matched a phone. A decision made in `app.rs` is one the desktop shell would have to make
+  again. Since 2026-10-02 (`decisions/desktop-is-the-tui-client-with-a-second-shell.md`): Linux
+  and Windows get a second front end on `construct-client`, not a second client.
+- **Front-end preferences are the front end's.** The theme is in `ui.json` beside the client's
+  `config.json`, written by `src/theme.rs`; the client's config has no theme.
 
 - **This client does not decide what a content type means.** It is the second implementation of
   the protocol, and the first comparison against iOS found the two already diverged: iOS held
@@ -98,9 +110,9 @@ screens/  →  app.rs  (terminal front end: screens, keys, drawing)
   talks to `ams.konstruct.cc` over **HTTP/2** with the platform trust store (same as iOS
   TCP). QUIC handshake to `ams.konstruct.cc` times out — Traefik H3 was removed; that
   hostname is Caddy H2. Decision: `decisions/tui-in-tree-grpc.md`.
-- **Screens and `app.rs` do not import `h3` / `quinn` / `construct-core` internals.** Crypto
-  goes through `orchestrator_task`; network I/O through `grpc/`. `src/grpc/` has no Ratatui
-  types and no `App` types — that is the extract boundary.
+- **Screens and `app.rs` do not import `h3` / `quinn` / `construct-core`.** The binary does not
+  depend on the core at all; crypto goes through the client's `orchestrator_task`, network I/O
+  through its `grpc/`.
 - **INITIATOR and RESPONDER init paths are distinct** (`init_session` vs
   `init_receiving_session`); tie-break: higher deviceId wins as INITIATOR. Copying the iOS
   "one init path" shortcut produces a permanent AEAD failure against a phone.

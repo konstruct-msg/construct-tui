@@ -1,17 +1,6 @@
 mod app;
-mod auth;
-mod bridge;
-mod client;
-mod config;
 mod event;
-mod grpc;
-mod invite;
-mod knst;
-mod orchestrator_task;
-mod proto;
 mod screens;
-mod storage;
-mod streaming;
 mod theme;
 mod tui;
 
@@ -21,7 +10,7 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use app::{App, AppConfig};
-use config::{TransportConfig, load_config};
+use construct_client::config::{self, TransportConfig, load_config};
 
 #[derive(Parser)]
 #[command(
@@ -181,7 +170,7 @@ async fn main() -> Result<()> {
         no_encrypt,
         headless: cli.headless,
         pq_active: cli.post_quantum,
-        theme: file_config.theme,
+        theme: theme::load_theme(),
     };
 
     let mut terminal = tui::init()?;

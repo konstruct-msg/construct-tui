@@ -12,71 +12,34 @@ path = "src/main.rs"
 
 [features]
 default = ["post-quantum"]
-post-quantum = ["construct-core/post-quantum"]
+post-quantum = ["construct-client/post-quantum"]
+
+[workspace]
+members = ["crates/construct-client"]
 
 [dependencies]
-# Crypto (Orchestrator). gRPC lives in src/grpc/ (extractable later).
-# Production public host (ams.konstruct.cc) is HTTP/2; QUIC/H3 is quic.konstruct.cc
-# with a pinned gateway cert (iOS construct-transport), not this client.
-construct-core = { path = "../construct-core" }
-
-h2 = "0.4"
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-rustls = { version = "0.23", features = ["ring"] }
-rustls-native-certs = "0.7"
-webpki-roots = "0.26"
-bytes = "1"
-http = "1"
-thiserror = "2"
+# Everything but the terminal: account, keys, the core, the stream, storage.
+construct-client = { path = "crates/construct-client" }
 
 # TUI
 ratatui = "0.30"
 crossterm = { version = "0.28", features = ["event-stream"] }
+qrcode = { version = "0.14", default-features = false }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
-tokio-stream = "0.1"
-async-stream = "0.3"
-
-# Error handling & utilities
-anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
+
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-
-# Protobuf codec (for envelope encoding)
-prost = "0.13"
-
-# Config & storage
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_bytes = "0.11"
 dirs = "5"
-
-# Session encryption at-rest
-argon2 = { version = "0.5", features = ["std"] }
-aes-gcm = "0.10"
 zeroize = { version = "1", features = ["std"] }
-
-# Message storage — SQLCipher
-rusqlite = { version = "0.31", features = ["bundled-sqlcipher"] }
-
-# Key derivation domain separation
-hkdf = "0.12"
-sha2 = "0.10"
-rand = "0.8"
-hex = "0.4"
-ed25519-dalek = { version = "2.0", features = ["std", "rand_core"] }
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-base64 = "0.22.1"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
-signature = "2"
-qrcode = { version = "0.14", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.4"
-
-[build-dependencies]
-prost-build = "0.13"
 
 [profile.release]
 opt-level = "s"

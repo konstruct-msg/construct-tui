@@ -3,8 +3,8 @@ fn main() {
 }
 
 fn compile_protos() {
-    let protos_dir =
-        std::env::var("CONSTRUCT_PROTOS_DIR").unwrap_or_else(|_| "../construct-protos".to_string());
+    let protos_dir = std::env::var("CONSTRUCT_PROTOS_DIR")
+        .unwrap_or_else(|_| "../../../construct-protos".to_string());
 
     println!("cargo:rerun-if-env-changed=CONSTRUCT_PROTOS_DIR");
     println!("cargo:rerun-if-changed={protos_dir}");
@@ -47,7 +47,7 @@ fn compile_protos() {
     // that cannot read them is a test that agrees with itself.
     //
     // Absolute: `include_str!` resolves a relative path against the *source file's* directory,
-    // so the default `../construct-protos` would be looked up from `src/` and miss.
+    // so the default `../../../construct-protos` would be looked up from `src/` and miss.
     let protos_abs = protos_path
         .canonicalize()
         .unwrap_or_else(|e| panic!("cannot resolve '{protos_dir}': {e}"));

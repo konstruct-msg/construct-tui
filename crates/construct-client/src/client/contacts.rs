@@ -13,7 +13,7 @@ pub struct SearchResult {
 }
 
 /// What a [`ClientCommand::FindContact`](super::ClientCommand::FindContact) started.
-pub(crate) enum FindStarted {
+pub enum FindStarted {
     UsernameSearch,
     InviteRedemption,
 }

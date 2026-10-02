@@ -217,11 +217,15 @@ konstruct logout
 
 ```bash
 cargo run
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo fmt
-bash scripts/install-hooks.sh    # pre-commit: fmt + clippy
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all
+git config core.hooksPath .githooks    # pre-push: fmt + clippy
 ```
+
+Two crates: the `konstruct` binary at the root is the terminal front end;
+`crates/construct-client` is everything else (account, keys, the core, the message stream,
+storage) and has no front-end dependency — a desktop front end is meant to sit on it too.
 
 There is no CI in this repo (removed 2026-06-19; the project was too early-stage to build in GitHub Actions).
 
@@ -238,7 +242,7 @@ There is no CI in this repo (removed 2026-06-19; the project was too early-stage
   [post-quantum coverage](https://konstruct-msg.github.io/construct-protocol/01-threat-model.html#post-quantum-coverage).
 
 DPI-bypass (VEIL) is **not** integrated. Transport is in-tree gRPC-over-HTTP/2 in
-`src/grpc/` and is kept extractable for a later non-Apple GUI.
+`crates/construct-client/src/grpc/`.
 
 ## Trademark
 
