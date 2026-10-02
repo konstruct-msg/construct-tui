@@ -213,6 +213,8 @@ impl SettingsScreen {
                 &self.device_id,
                 &self.server,
                 &self.signing_key_hex,
+                // No recovery key in this client yet, so no account address to sign.
+                None,
             ) {
                 Ok(payload) => self.invite_cache = Some((payload, Instant::now())),
                 Err(e) => tracing::warn!("invite generation failed: {e}"),

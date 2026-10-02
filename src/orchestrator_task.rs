@@ -63,9 +63,10 @@ impl OrchestratorHandle {
 
     /// Route an inbound stream message with its server cursor context.
     pub(crate) fn stream_message(&self, event: IncomingEvent, context: StreamMessageContext) {
-        let _ = self
-            .cmd_tx
-            .send(OrchestratorCommand::StreamMessage { event, context });
+        let _ = self.cmd_tx.send(OrchestratorCommand::StreamMessage {
+            event: Box::new(event),
+            context,
+        });
     }
 }
 
@@ -95,7 +96,8 @@ enum OrchestratorCommand {
         contact_id: String,
     },
     StreamMessage {
-        event: IncomingEvent,
+        // Boxed: an `IncomingEvent` dwarfs the other variants (clippy large_enum_variant).
+        event: Box<IncomingEvent>,
         context: StreamMessageContext,
     },
 }
@@ -392,7 +394,7 @@ async fn handle_command(
             }
 
             cursor.note(&context.message_id, context.stream_cursor);
-            let actions = orchestrator.handle_event(event);
+            let actions = orchestrator.handle_event(*event);
             let mut follow_ups: Vec<IncomingEvent> = Vec::new();
             let mut session_inited = std::collections::HashSet::new();
             for action in actions {
@@ -497,7 +499,10 @@ async fn dispatch(
                     .await
                     .map(|f| f.bundle)
                     .map_err(|e| e.to_string());
-                let _ = tx.send(IncomingEvent::SessionBundleFetched { contact_id, bundle });
+                let _ = tx.send(IncomingEvent::SessionBundleFetched {
+                    contact_id,
+                    bundle: Box::new(bundle),
+                });
             });
         }
 
@@ -566,6 +571,9 @@ async fn dispatch(
             }
         }
         Action::DuplicateDropped { message_id } => cursor.commit(storage, &message_id),
+        // A payload the core cannot parse (or a retired suite): nothing will ever read it, so it
+        // is recorded and passed like a duplicate. The core sends the NotifyError beside it.
+        Action::MalformedDropped { message_id } => cursor.commit(storage, &message_id),
 
         Action::PersistAck {
             message_id,
@@ -646,7 +654,16 @@ async fn dispatch(
             contact_id,
             message_id,
             payload,
+            enveloped,
         } => {
+            // An enveloped answer goes back as a session envelope inside a sealed inner. This
+            // client neither opens nor sends session envelopes (it hands the core no
+            // `envelope_session`), so the core does not ask for one; if it ever does, sending the
+            // envelope as a plain box would be unreadable, so it is held instead.
+            if enveloped {
+                tracing::warn!(%contact_id, %message_id, "decryption error held: enveloped answer needs sealed sending");
+                return;
+            }
             if uuid::Uuid::parse_str(&contact_id).is_err() {
                 tracing::warn!(device_id = %contact_id, %message_id, "decryption error held: no account routing");
                 return;
@@ -727,18 +744,6 @@ async fn dispatch(
 
 fn apply_secure_store_save(storage: &Storage, key: &str, data: &[u8]) -> Result<()> {
     storage.secure_save_or_delete(key, data)
-}
-
-fn apply_session_terminated(
-    storage: &Storage,
-    contact_id: &str,
-    archive_bytes: &[u8],
-) -> Result<()> {
-    let archive_key = format!("archive_{contact_id}");
-    storage.secure_save(&archive_key, archive_bytes)?;
-    let session_key = format!("session_{contact_id}");
-    storage.secure_delete(&session_key)?;
-    Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1028,26 +1033,6 @@ fn stream_cursor_millis(cursor: Option<&str>) -> Option<u64> {
     millis.parse().ok()
 }
 
-fn uuid_v4() -> String {
-    use rand::RngCore;
-    let mut b = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut b);
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        u32::from_be_bytes(b[0..4].try_into().unwrap()),
-        u16::from_be_bytes(b[4..6].try_into().unwrap()),
-        u16::from_be_bytes(b[6..8].try_into().unwrap()),
-        u16::from_be_bytes(b[8..10].try_into().unwrap()),
-        {
-            let mut arr = [0u8; 8];
-            arr[2..].copy_from_slice(&b[10..]);
-            u64::from_be_bytes(arr)
-        }
-    )
-}
-
 fn now_ms() -> i64 {
     i64::try_from(now_ms_u64()).unwrap_or(i64::MAX)
 }
@@ -1075,23 +1060,6 @@ mod tests {
             .expect("initial session save succeeds");
         apply_secure_store_save(&storage, "session_peer", b"").expect("delete sentinel succeeds");
 
-        assert_eq!(storage.secure_load("session_peer").unwrap(), None);
-    }
-
-    #[test]
-    fn session_terminated_archives_and_deletes_hot_session() {
-        let storage = Storage::open_in_memory().expect("in-memory storage opens");
-        storage
-            .secure_save("session_peer", b"hot-session")
-            .expect("hot session fixture saves");
-
-        apply_session_terminated(&storage, "peer", b"archive-session")
-            .expect("session termination storage contract succeeds");
-
-        assert_eq!(
-            storage.secure_load("archive_peer").unwrap().as_deref(),
-            Some(b"archive-session".as_ref())
-        );
         assert_eq!(storage.secure_load("session_peer").unwrap(), None);
     }
 
@@ -1247,16 +1215,14 @@ mod tests {
         _is_control: bool,
     ) -> OrchestratorCommand {
         OrchestratorCommand::StreamMessage {
-            event: IncomingEvent::MessageReceived {
+            event: Box::new(IncomingEvent::MessageReceived {
                 message_id: message_id.to_string(),
                 from: contact_id.to_string(),
                 data: b"not-a-wire-payload".to_vec(),
-                msg_num,
-                kem_ct: Vec::new(),
-                otpk_id: 0,
                 sender_certificate: None,
                 content_type,
-            },
+                envelope_session: None,
+            }),
             context: StreamMessageContext {
                 contact_id: contact_id.to_string(),
                 message_id: message_id.to_string(),
