@@ -2,31 +2,36 @@
 
 use uuid::Uuid;
 
-use super::Client;
-use crate::storage::StoredMessage;
+use super::{Client, ClientEvent};
 
 impl Client {
-    /// Hand a text message to the orchestrator; returns its message id.
-    pub(crate) fn send_text(&self, contact_id: &str, text: &str) -> String {
+    /// Hand a text message to the orchestrator.
+    pub(super) fn send_text(&self, contact_id: String, text: String) {
         let message_id = Uuid::new_v4().to_string();
         if let Some(ref orch) = self.orch_handle {
             orch.send(
                 construct_core::orchestration::actions::IncomingEvent::OutgoingMessage {
-                    contact_id: contact_id.to_string(),
+                    contact_id: contact_id.clone(),
                     message_id: message_id.clone(),
                     plaintext: text.as_bytes().to_vec(),
                     content_type: 0,
                 },
             );
         }
-        message_id
+        self.emit(ClientEvent::MessageQueued {
+            contact_id,
+            message_id,
+            text,
+        });
     }
 
     /// The last `limit` stored messages with one person, oldest first.
-    pub(crate) fn history(&self, peer_id: &str, limit: usize) -> Vec<StoredMessage> {
-        self.read_storage
+    pub(super) fn load_history(&self, peer_id: String, limit: usize) {
+        let messages = self
+            .read_storage
             .as_ref()
-            .and_then(|s| s.get_messages(peer_id, limit).ok())
-            .unwrap_or_default()
+            .and_then(|s| s.get_messages(&peer_id, limit).ok())
+            .unwrap_or_default();
+        self.emit(ClientEvent::History { peer_id, messages });
     }
 }

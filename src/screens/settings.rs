@@ -1,7 +1,5 @@
 //! Settings screen — server/transport info, device identity, logout, safety number.
 
-use std::time::{Duration, Instant};
-
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -10,7 +8,6 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
 };
 
-use crate::invite::generate_invite_qr;
 use crate::theme::ThemeMode;
 
 /// An action the user triggered from the settings screen.
@@ -45,11 +42,6 @@ pub struct SettingsScreen {
     pub pq_active: bool,
     state: ListState,
     items: Vec<SettingsItem>,
-    /// Signing key for generating invite QR codes.
-    signing_key_hex: String,
-    /// Cached invite QR payload (Base64 JSON) and the time it was generated.
-    /// Regenerated automatically after 4 minutes (server TTL is 5 min).
-    invite_cache: Option<(String, Instant)>,
 }
 
 impl SettingsScreen {
@@ -59,13 +51,11 @@ impl SettingsScreen {
         device_id: impl Into<String>,
         user_id: impl Into<String>,
         pq_active: bool,
-        signing_key_hex: impl Into<String>,
     ) -> Self {
         let server = server.into();
         let transport_label = transport_label.into();
         let device_id = device_id.into();
         let user_id = user_id.into();
-        let signing_key_hex = signing_key_hex.into();
 
         let pq_str = if pq_active {
             "yes (Kyber-768)"
@@ -150,8 +140,6 @@ impl SettingsScreen {
             pq_active,
             state,
             items,
-            signing_key_hex,
-            invite_cache: None,
         }
     }
 
@@ -186,42 +174,8 @@ impl SettingsScreen {
         device_id: impl Into<String>,
         user_id: impl Into<String>,
         pq_active: bool,
-        signing_key_hex: impl Into<String>,
     ) {
-        *self = Self::new(
-            server,
-            transport_label,
-            device_id,
-            user_id,
-            pq_active,
-            signing_key_hex,
-        );
-    }
-
-    /// Returns a valid invite QR payload, regenerating if the cached one is ≥4 min old.
-    pub fn invite_payload(&mut self) -> Option<&str> {
-        const REFRESH_SECS: u64 = 240; // regenerate after 4 min (TTL is 5 min)
-
-        let needs_refresh = match &self.invite_cache {
-            None => true,
-            Some((_, ts)) => ts.elapsed() >= Duration::from_secs(REFRESH_SECS),
-        };
-
-        if needs_refresh && !self.signing_key_hex.is_empty() && !self.user_id.is_empty() {
-            match generate_invite_qr(
-                &self.user_id,
-                &self.device_id,
-                &self.server,
-                &self.signing_key_hex,
-                // No recovery key in this client yet, so no account address to sign.
-                None,
-            ) {
-                Ok(payload) => self.invite_cache = Some((payload, Instant::now())),
-                Err(e) => tracing::warn!("invite generation failed: {e}"),
-            }
-        }
-
-        self.invite_cache.as_ref().map(|(p, _)| p.as_str())
+        *self = Self::new(server, transport_label, device_id, user_id, pq_active);
     }
 }
 
@@ -309,9 +263,6 @@ impl SettingsScreen {
         let block = palette.panel(" My device ", false);
         let inner = block.inner(area);
         block.render(area, buf);
-
-        // Pre-generate the invite so [Q] launches instantly.
-        let _ = self.invite_payload();
 
         let hint = vec![
             Line::from(Span::styled(
