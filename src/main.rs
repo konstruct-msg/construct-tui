@@ -1,6 +1,7 @@
 mod app;
 mod auth;
 mod bridge;
+mod client;
 mod config;
 mod event;
 mod grpc;

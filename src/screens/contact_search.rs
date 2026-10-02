@@ -12,12 +12,7 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget},
 };
 
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    pub user_id: String,
-    pub username: String,
-    pub display_name: String,
-}
+pub use crate::client::SearchResult;
 
 /// State for the contact search / add screen.
 pub struct ContactSearchScreen {

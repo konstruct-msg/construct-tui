@@ -63,10 +63,17 @@ Do not copy `.proto` files into this repo. `build.rs` reads `CONSTRUCT_PROTOS_DI
 ## Architecture invariants
 
 ```
-screens/  →  app.rs
-              ├── orchestrator_task.rs  →  construct-core Orchestrator
-              └── grpc/                 →  gRPC-over-H2 (system-root TLS; ams.konstruct.cc)
+screens/  →  app.rs  (terminal front end: screens, keys, drawing)
+               └── client/  (the client layer: account, keys, contacts, stream relay)
+                     ├── orchestrator_task.rs  →  construct-core Orchestrator
+                     └── grpc/                 →  gRPC-over-H2 (system-root TLS; ams.konstruct.cc)
 ```
+
+- **`client/` knows no front end.** No Ratatui, no crossterm, no `screens`, no `App` —
+  `client::boundary_tests` fails on any of them. `app.rs` turns keys into `Client` calls and
+  `ClientEvent`s into what is on screen; a decision made in `app.rs` is one the desktop shell
+  would have to make again. Since 2026-10-02 (`decisions/desktop-is-the-tui-client-with-a-second-shell.md`):
+  Linux and Windows get a second front end on the same `client/`, not a second client.
 
 - **This client does not decide what a content type means.** It is the second implementation of
   the protocol, and the first comparison against iOS found the two already diverged: iOS held
