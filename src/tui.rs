@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -10,12 +11,12 @@ pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 pub fn init() -> Result<Tui> {
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
+    execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
     Ok(Terminal::new(CrosstermBackend::new(stdout()))?)
 }
 
 pub fn restore() -> Result<()> {
     disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen)?;
+    execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
     Ok(())
 }

@@ -55,23 +55,22 @@ gone; do not add a `[patch]` for it — a gitignored `.cargo/config.toml` pointi
 `../construct-ice` is what made `cargo check --offline` fail on a repo that no longer
 exists.
 
-Do not copy `.proto` files into this repo. `crates/construct-client/build.rs` reads
-`CONSTRUCT_PROTOS_DIR`, default `../../../construct-protos` (a sibling of this checkout).
-
-A workspace of two crates since 2026-10-02: the root package is the `konstruct` binary (the
-terminal front end), `crates/construct-client` is everything else. Without `--workspace`, `cargo
-test` and `cargo clippy` check only the binary.
+Since 2026-10-23 this repository is only the terminal shell: `src/main.rs` (arguments, logging,
+the run loop), `src/tui.rs` (the terminal) and `src/event.rs` (keys and pastes). Everything else
+is in [`construct-client`](https://github.com/konstruct-msg/construct-client), checked out next to
+this repository: the client layer (`crates/construct-client`) and the screens
+(`crates/construct-screens`), which the desktop shell draws too. Changes to either go there.
+Do not copy `.proto` files anywhere; the client's `build.rs` reads `CONSTRUCT_PROTOS_DIR`.
 
 ---
 
 ## Architecture invariants
 
 ```
-konstruct (src/)                     the terminal front end: screens, keys, drawing, theme
-  app.rs  ── ClientCommand ──▶  construct-client (crates/construct-client)
-          ◀── ClientEvent ───     client/            the client task: account, keys, contacts
-                                  orchestrator_task  → construct-core Orchestrator
-                                  grpc/              → gRPC-over-H2 (system-root TLS; ams.konstruct.cc)
+konstruct (this repo)    terminal, keys, run loop
+  └─ construct-screens   App, screens, theme          (construct-client repo)
+       app.rs ── ClientCommand ──▶ construct-client  account, keys, the core, stream, storage
+              ◀── ClientEvent ───
 ```
 
 - **`construct-client` knows no front end, and the compiler holds that line.** It has no
@@ -116,8 +115,10 @@ konstruct (src/)                     the terminal front end: screens, keys, draw
 - **INITIATOR and RESPONDER init paths are distinct** (`init_session` vs
   `init_receiving_session`); tie-break: higher deviceId wins as INITIATOR. Copying the iOS
   "one init path" shortcut produces a permanent AEAD failure against a phone.
-- **Session addressing uses `ServerUserId` (36-char UUID), never `CryptoDeviceId` (32-char
-  hex).** Mixing the spaces breaks Double Ratchet AD.
+- **Everything handed to the core is a `CryptoDeviceId` (32-char hex), including the core's own
+  local id; accounts (`ServerUserId`, 36-char UUID) are for the server and the screens.** Mixing
+  the spaces breaks the Double Ratchet AD. The rule before 2026-10-23 said the opposite and was
+  why this client could not talk to iOS (construct-client `peers.rs`).
 - **`messageNumber == 0` is not a handshake.** A sending-chain restart looks the same as
   X3DH. Treating zero as "new session" is how leftovers loop on every reconnect.
 - **Device keys are deleted only on gRPC UNAUTHENTICATED (16) / PERMISSION_DENIED (7)** —
@@ -147,7 +148,7 @@ asks to persist comes from `export_session_bytes_for`, not JSON.
 
 ## Code conventions
 
-- TUI screens are Ratatui `Widget` impls in `screens/`. State lives in `App`; screens borrow
+- Screens are Ratatui `Widget` impls in construct-screens. State lives in `App`; screens borrow
   it.
 - User-facing copy is plain language ("people / chats / device", never "node / stream /
   replica"). Product name **Konstruct** in Latin. Code identifiers keep domain names.

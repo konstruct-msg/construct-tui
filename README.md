@@ -44,7 +44,7 @@ Minimum terminal size: **80×24**. At widths below 96 columns, the active pane f
 
 The interface has **Phosphor** (dark) and **Paper** (light) themes. Both use Konstruct blue `#008CFF` for focus and selection. Choose a theme with `T` in Settings; the choice is saved in `~/.config/construct-tui/config.json`.
 
-Visual tokens and shared panel, text, selection, and state styles live in [`src/theme.rs`](src/theme.rs). Each screen receives the active theme from `App::render`; new screens should use those styles instead of terminal default colors. QR modules stay black on white in both themes so a camera can read them.
+Visual tokens and shared panel, text, selection, and state styles live in `construct-screens` (`src/theme.rs` in the [construct-client](https://github.com/konstruct-msg/construct-client) repository). Each screen receives the active theme from `App::render`; new screens should use those styles instead of terminal default colors. QR modules stay black on white in both themes so a camera can read them.
 
 ---
 
@@ -217,15 +217,15 @@ konstruct logout
 
 ```bash
 cargo run
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all
 git config core.hooksPath .githooks    # pre-push: fmt + clippy
 ```
 
-Two crates: the `konstruct` binary at the root is the terminal front end;
-`crates/construct-client` is everything else (account, keys, the core, the message stream,
-storage) and has no front-end dependency — a desktop front end is meant to sit on it too.
+This repository is the terminal shell only. The client layer and the screens live in
+[construct-client](https://github.com/konstruct-msg/construct-client), checked out next to this
+repository; the desktop shell (construct-desktop) draws the same screens.
 
 There is no CI in this repo (removed 2026-06-19; the project was too early-stage to build in GitHub Actions).
 
@@ -241,8 +241,8 @@ There is no CI in this repo (removed 2026-06-19; the project was too early-stage
   message, and anything signed by the server, is still classical; see the protocol book's
   [post-quantum coverage](https://konstruct-msg.github.io/construct-protocol/01-threat-model.html#post-quantum-coverage).
 
-DPI-bypass (VEIL) is **not** integrated. Transport is in-tree gRPC-over-HTTP/2 in
-`crates/construct-client/src/grpc/`.
+DPI-bypass (VEIL) is **not** integrated. Transport is gRPC-over-HTTP/2 in construct-client
+(`crates/construct-client/src/grpc/`).
 
 ## Trademark
 
