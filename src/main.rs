@@ -1,7 +1,4 @@
-mod app;
 mod event;
-mod screens;
-mod theme;
 mod tui;
 
 use anyhow::Result;
@@ -9,8 +6,8 @@ use clap::{Parser, Subcommand};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-use app::{App, AppConfig};
 use construct_client::config::{self, TransportConfig, load_config};
+use construct_screens::{App, AppConfig};
 
 #[derive(Parser)]
 #[command(
@@ -168,17 +165,33 @@ async fn main() -> Result<()> {
         server_url,
         transport,
         no_encrypt,
-        headless: cli.headless,
         pq_active: cli.post_quantum,
-        theme: theme::load_theme(),
+        theme: construct_screens::load_theme(),
     };
 
     let mut terminal = tui::init()?;
-    let result = App::new(cfg).run(&mut terminal).await;
+    let result = run(App::new(cfg), &mut terminal).await;
     tui::restore()?;
 
     tracing::info!("konstruct exiting");
     result
+}
+
+/// Draw, then wait for a key from the terminal or an event from the client — zero CPU when idle.
+async fn run(mut app: App, terminal: &mut tui::Tui) -> Result<()> {
+    app.start();
+    let mut events = event::EventHandler::new();
+    while app.is_running() {
+        terminal.draw(|frame| app.render(frame))?;
+        tokio::select! {
+            Some(event) = events.next() => match event {
+                event::Event::Key(key) => app.handle_key(key),
+                event::Event::Paste(text) => app.handle_paste(&text),
+            },
+            wake = app.wake() => app.on_wake(wake),
+        }
+    }
+    Ok(())
 }
 
 fn log_file_path() -> std::path::PathBuf {

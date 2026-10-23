@@ -12,34 +12,25 @@ path = "src/main.rs"
 
 [features]
 default = ["post-quantum"]
-post-quantum = ["construct-client/post-quantum"]
-
-[workspace]
-members = ["crates/construct-client"]
+post-quantum = ["construct-client/post-quantum", "construct-screens/post-quantum"]
 
 [dependencies]
-# Everything but the terminal: account, keys, the core, the stream, storage.
-construct-client = { path = "crates/construct-client" }
+# Everything but the terminal lives in construct-client, checked out next to this repository:
+# the client layer (account, keys, the core, the stream, storage) and the screens.
+construct-client = { path = "../construct-client/crates/construct-client" }
+construct-screens = { path = "../construct-client/crates/construct-screens" }
 
-# TUI
+# The terminal. The same crossterm as ratatui's, so key events are one type.
 ratatui = "0.30"
-crossterm = { version = "0.28", features = ["event-stream"] }
-qrcode = { version = "0.14", default-features = false }
+crossterm = { version = "0.29", features = ["event-stream"] }
 
-# Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
-
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 dirs = "5"
-zeroize = { version = "1", features = ["std"] }
-uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-tracing-appender = "0.2.4"
 
 [profile.release]
 opt-level = "s"
