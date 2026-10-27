@@ -1,207 +1,114 @@
 # AGENTS.md — construct-tui
 
-Hard invariants for AI coding agents in this repository, and nothing else. Every rule here is
-attached to the incident that produced it. Detail lives in the linked documents; read the one
-covering your area **before** working in it.
+Terminal shell of the Konstruct client: Rust + Ratatui, binary `konstruct`. Crate, git repo and
+config directory stay `construct-tui` on purpose. Since 2026-10-23 the repo holds only the
+terminal (`src/main.rs`, `src/tui.rs`, `src/event.rs`); the client layer and the screens live in
+[`construct-client`](https://github.com/konstruct-msg/construct-client), checked out next to it.
+Behind iOS; **not** a production-usable messenger. Protocol behaviour comes from
+`construct-messenger`, not from this tree or the archived April 2026 TUI guide.
 
-| Area | Read first |
+If a rule here and your plan disagree, the rule wins until a `decisions/` note says otherwise.
+
+## Read first
+
+| Area | Read |
 |---|---|
+| Why these rules exist; checklist before any protocol feature | `~/Code/construct-docs/decisions/rules-from-the-first-year.md` |
 | Forward plan, current gaps | `~/Code/construct-docs/client/TUI_DEVELOPMENT_GUIDE.md` |
 | Why gRPC is in-tree | `~/Code/construct-docs/decisions/tui-in-tree-grpc.md` |
 | Protocol behaviour (source of truth) | `construct-messenger` + `~/Code/construct-docs/client/ios/ARCHITECTURE_NOTES.md` |
 | Session / identity / AD | `~/Code/construct-docs/decisions/identity-spaces.md` |
 | Handshake vs leftover | `~/Code/construct-docs/decisions/message-number-zero-is-not-a-handshake.md` |
 | Stream cursor / reconnect | `~/Code/construct-docs/decisions/stream-cursor-stall-anatomy.md` |
+| Content-type mappings | `~/Code/construct-docs/decisions/wire-format-one-authority.md` |
 | Binary data / CFE | `~/Code/construct-docs/client/shared/construct-ffi-binary-format.md` |
 | Product wording | `~/Code/construct-docs/client/GLOSSARY_PRODUCT_LANGUAGE.md` |
 | Protos | sibling `construct-protos`; `~/Code/construct-docs/decisions/protos-are-vendored-not-copied.md` |
 | Engine is dead | `~/Code/construct-docs/decisions/macos-desktop-strategy.md` |
+| Testing | `~/Code/construct-docs/decisions/testing-by-pure-decision.md` |
 | Everything else | `~/Code/construct-docs` (vault; its own `AGENTS.md` is authoritative) |
 
----
+## The Zen of Konstruct
 
-## Overview
+```
+Someone has solved it before. Read them first.
+The core decides; the app executes.
+A message names the state it means. Time is not an address.
+Reproduce, then fix.
+One meaning, one carrier.
+Bytes stay bytes.
+Measure, then build.
+The effect is the proof, not the exit code.
+A test that cannot fail is worse than no test.
+Boring before new.
+Temporary is permanent, unless something checks it.
+What nothing reads is not sent.
+Silence is the worst failure: a message that never appears raises no error.
+```
 
-Terminal UI client for Konstruct. Rust + Ratatui. Binary `konstruct`. Crate, git repo, and
-config directory stay `construct-tui` — that split is deliberate (hygiene 2026-08-22: an
-accidental binary rename fought the user-facing name; config was wrongly advertised as
-`~/.config/konstruct/`).
+Canonical source: `~/Code/construct-docs/decisions/rules-from-the-first-year.md` — change it there first.
 
-This client is behind iOS and is **not** a production-usable messenger. Protocol behaviour
-comes from `construct-messenger`, not from this tree or from the April 2026 TUI guide
-(`construct-docs/_archive/TUI_DEVELOPMENT_GUIDE.md`).
+## Rules
 
-Sibling checkouts under `~/Code/`: `construct-core` (path dep), `construct-protos` (prost
-source of truth). GitHub org: [konstruct-msg](https://github.com/konstruct-msg).
+1. **Prior art first.** Before any protocol mechanism, write down how Signal / MLS / Matrix solve it and why we deviate. The reference client is iOS.
+2. **The core decides, this client executes.** If two clients must compute it identically, or it touches ratchet/session state or a session's lifecycle, it is a `construct-core` call. A decision reimplemented here does not fail loudly — the message just never appears. Look in `construct-core/src/construct_core.udl` first.
+3. **A control message names the state it refers to.** A timer, cooldown, window, tie-break or retry budget in a fix means the message has no address.
+4. **Reproduce before fixing.** Live 1:1 against iOS is the gate; a fix counts when the case that was red turns green.
+5. **One meaning, one carrier.** Device id and account id are different types; content-type meaning is the conformance file, not this crate. Read `decisions/one-meaning-two-carriers.md` before adding a field, counter or timeout.
+6. **Binary stays binary**, source to destination (see Binary data).
+7. **Measure, then build** (network, transport, battery): a measurement on the real path before a mechanism.
+8. **Verify the effect, not the exit code.**
+9. **A test must be able to fail.** Put the decision in a pure function and mutation-check the test.
+10. **Depth before breadth.** 1:1 text against iOS before VEIL, groups or polish.
+11. **A temporary exception has an end date and a check.**
+12. **Branch and PR, always** (see Git).
 
----
+A change on the delivery or crypto path answers three questions in its commit message: what does the server or any relay learn that it did not before; what can a party (server, sender, sibling device) withhold or substitute that it could not before; which trust boundary moves, and which way.
 
-## Build
+## Invariants of this repo
 
-Toolchain: stable **1.96** (`rust-toolchain.toml`). Core's `rust-version` is 1.96; a 1.92
-host failed the first compile after the engine drop with an error that looked like a crate
-problem.
+- **`construct-client` knows no front end; the compiler holds the line** (`the_client_crate_depends_on_no_front_end`). `app.rs` sends `ClientCommand`s and renders `ClientEvent`s; it never calls into the client or waits on it.
+- **Nothing two clients must compute identically lives in the front end.** Key material stays in the client; the safety number is the core's `compute_safety_number` over device ids. A decision in `app.rs` is one the desktop shell must make again.
+- **Front-end preferences are the front end's**: the theme is `ui.json` (`src/theme.rs`), not the client's `config.json`.
+- **Content types:** values come from the generated enum (`ContentType::SessionPing as u8`), never `= 25`. What to do with one is `construct-protos/conformance/knst_content_types.json`, read by `knst::tests::content_type_vectors_match_this_table` (`build.rs` exports `CONSTRUCT_PROTOS_DIR`). A new type adds its row there in the same change.
+- **`construct-engine` does not come back** — no `EngineAdapter`, no `UiEvent`/`PlatformAction` façade.
+- **Do not depend on `construct-transport`.** It is the iOS QUIC pipe wanting a pinned gateway cert; the TUI speaks HTTP/2 with the platform trust store (QUIC to the H2 host times out). `decisions/tui-in-tree-grpc.md`.
+- **Screens and `app.rs` do not import `h3` / `quinn` / `construct-core`**; crypto goes through the client's `orchestrator_task`, network through its `grpc/`.
+- **INITIATOR and RESPONDER init paths are distinct** (`init_session` vs `init_receiving_session`); higher deviceId wins as INITIATOR. The iOS "one init path" shortcut gives a permanent AEAD failure against a phone.
+- **Everything handed to the core is a `CryptoDeviceId` (32-char hex), including the core's own local id; `ServerUserId` (36-char UUID) is for the server and screens.** Mixing breaks the Double Ratchet AD (see `peers.rs` in construct-client).
+- **`messageNumber == 0` is not a handshake**; treating it as one loops leftovers on every reconnect.
+- **Device keys are deleted only on gRPC UNAUTHENTICATED (16) / PERMISSION_DENIED (7)**, never on a transport error.
+- **Advance `since_cursor` only after durable persist** — the server trims to it. The initial poll currently rewinds (`backend/MESSAGING_INITIAL_POLL_IGNORES_SINCE_CURSOR.md`); reconnect must tolerate redelivery.
+- **A producer with no consumer is a defect**: a send, signal or action lands with its reader, or is removed. An unconsumed control message still costs a ratchet advance.
+- **VEIL is not ICE and is not wired.** `--bridge` / `--headless` / `--config` are clap flags, not behaviour. Do not resume obfs4 / `construct-ice`; VEIL is phase D, after 1:1 text works.
+- **No `construct-ice` `[patch]`**; a gitignored `.cargo/config.toml` pointing at it breaks `cargo check --offline`.
+
+### Binary data
+
+Keys, ciphertexts and wire payloads are bytes end to end (protobuf `bytes` or CFE). Base64 only at true text boundaries (QR, invite links). Session state the Orchestrator persists comes from `export_session_bytes_for`, not JSON.
+
+### Build and test
+
+Toolchain stable **1.96** (`rust-toolchain.toml`; core's `rust-version` is 1.96, an older host fails with an error that looks like a crate problem). Default features include `post-quantum`; there is no `ice` feature. Do not copy `.proto` files (the client's `build.rs` reads `CONSTRUCT_PROTOS_DIR`). Siblings under `~/Code/`: `construct-client`, `construct-core`, `construct-protos`.
 
 ```bash
-cargo build --release              # binary at target/release/konstruct
-cargo run
+cargo build --release   # target/release/konstruct
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all
 ```
 
-Default features include `post-quantum`. There is **no** `ice` feature. `construct-ice` is
-gone; do not add a `[patch]` for it — a gitignored `.cargo/config.toml` pointing at
-`../construct-ice` is what made `cargo check --offline` fail on a repo that no longer
-exists.
+Tests cover storage and safety-number helpers only; extract the decision and mutate it. There is no CI and none may be added that cannot compile sibling path deps.
 
-Since 2026-10-23 this repository is only the terminal shell: `src/main.rs` (arguments, logging,
-the run loop), `src/tui.rs` (the terminal) and `src/event.rs` (keys and pastes). Everything else
-is in [`construct-client`](https://github.com/konstruct-msg/construct-client), checked out next to
-this repository: the client layer (`crates/construct-client`) and the screens
-(`crates/construct-screens`), which the desktop shell draws too. Changes to either go there.
-Do not copy `.proto` files anywhere; the client's `build.rs` reads `CONSTRUCT_PROTOS_DIR`.
+### Conventions
 
----
+- Screens are Ratatui `Widget`s in construct-screens; state lives in `App`.
+- Plain-language copy ("people / chats / device"); product name **Konstruct** in Latin; code keeps domain names.
+- Config `~/.config/construct-tui/` (`session.enc`, `config.json`); data `~/.local/share/construct-tui/` (`messages.db`, `konstruct.log`); Argon2id 32 MiB.
+- Comment only non-obvious logic; a field left out on purpose at a boundary says so in a comment.
 
-## Architecture invariants
+## Git and process
 
-```
-konstruct (this repo)    terminal, keys, run loop
-  └─ construct-screens   App, screens, theme          (construct-client repo)
-       app.rs ── ClientCommand ──▶ construct-client  account, keys, the core, stream, storage
-              ◀── ClientEvent ───
-```
-
-- **`construct-client` knows no front end, and the compiler holds that line.** It has no
-  Ratatui, crossterm or windowing dependency (`tests::the_client_crate_depends_on_no_front_end`
-  reads its manifest), and it cannot name the binary's modules. The client runs as its own
-  task: `app.rs` sends `ClientCommand`s through a `ClientHandle` and turns `ClientEvent`s into
-  what is on screen — it never calls into the client or waits on it.
-- **Nothing that two clients must compute identically lives in the front end.** Key material
-  stays in the client (the invite is minted there; the settings screen held the signing key
-  until 2026-10-02), and the safety number is the core's (`compute_safety_number` over device
-  ids, the one iOS shows) — the front end computed its own until 2026-10-02 and could never
-  have matched a phone. A decision made in `app.rs` is one the desktop shell would have to make
-  again. Since 2026-10-02 (`decisions/desktop-is-the-tui-client-with-a-second-shell.md`): Linux
-  and Windows get a second front end on `construct-client`, not a second client.
-- **Front-end preferences are the front end's.** The theme is in `ui.json` beside the client's
-  `config.json`, written by `src/theme.rs`; the client's config has no theme.
-
-- **This client does not decide what a content type means.** It is the second implementation of
-  the protocol, and the first comparison against iOS found the two already diverged: iOS held
-  `{12,14,21,23,24,25,26}` as control, `knst::is_silent_type` held `{12,13,14,25,26}`. Both were
-  defensible — they answered different questions nobody had written down — and nothing failed,
-  because a divergence here is a payload that is a bubble on one client and nothing on the other.
-  - Values come from the generated enum: `ContentType::SessionPing as u8`, never `= 25`.
-  - What to do with a value is `construct-protos/conformance/knst_content_types.json`, read by
-    `knst::tests::content_type_vectors_match_this_table`. `build.rs` exports
-    `CONSTRUCT_PROTOS_DIR` so the test can `include_str!` it.
-  - **Adding a content type means adding its row there in the same change.** A type this client
-    has not learned then reddens that test on the next build.
-  - `decisions/wire-format-one-authority.md` before touching `disposition()` or the constants.
-- **`construct-engine` does not come back.** Retired from messenger 2026-07-28, dropped from
-  this crate 2026-08-22. No `EngineAdapter`, no `UiEvent`/`PlatformAction` façade. See
-  `decisions/macos-desktop-strategy.md` — the 2026-06-16 trigger "engine returns if a TUI
-  push starts" is retired; the TUI push started and still does not use the engine.
-- **Do not depend on `construct-transport`.** That crate is the iOS UniFFI QUIC pipe and
-  `QuicClient::connect` wants a **pinned gateway cert** on `quic.konstruct.cc`. The TUI
-  talks to `ams.konstruct.cc` over **HTTP/2** with the platform trust store (same as iOS
-  TCP). QUIC handshake to `ams.konstruct.cc` times out — Traefik H3 was removed; that
-  hostname is Caddy H2. Decision: `decisions/tui-in-tree-grpc.md`.
-- **Screens and `app.rs` do not import `h3` / `quinn` / `construct-core`.** The binary does not
-  depend on the core at all; crypto goes through the client's `orchestrator_task`, network I/O
-  through its `grpc/`.
-- **INITIATOR and RESPONDER init paths are distinct** (`init_session` vs
-  `init_receiving_session`); tie-break: higher deviceId wins as INITIATOR. Copying the iOS
-  "one init path" shortcut produces a permanent AEAD failure against a phone.
-- **Everything handed to the core is a `CryptoDeviceId` (32-char hex), including the core's own
-  local id; accounts (`ServerUserId`, 36-char UUID) are for the server and the screens.** Mixing
-  the spaces breaks the Double Ratchet AD. The rule before 2026-10-23 said the opposite and was
-  why this client could not talk to iOS (construct-client `peers.rs`).
-- **`messageNumber == 0` is not a handshake.** A sending-chain restart looks the same as
-  X3DH. Treating zero as "new session" is how leftovers loop on every reconnect.
-- **Device keys are deleted only on gRPC UNAUTHENTICATED (16) / PERMISSION_DENIED (7)** —
-  never on a transport error.
-- **Advance `since_cursor` only after durable persist.** The server trims to that value.
-  Optimistic advance deletes mail. The server also currently rewinds on the initial poll
-  (`backend/MESSAGING_INITIAL_POLL_IGNORES_SINCE_CURSOR.md`); reconnect must tolerate
-  redelivery.
-- **A producer with no consumer is a defect.** If you add a send, a signal, or an action,
-  the reader lands in the same change — or the sender is removed. An unconsumed control
-  message still costs a ratchet advance (`__session_reset_notify__`, April 2026, four months
-  of visible bubbles on multi-device accounts).
-- **VEIL is not ICE and is not wired.** `--bridge` / `--headless` / `--config` are clap
-  flags, not behaviour. Do not resume obfs4 / `construct-ice`. VEIL is phase D of the TUI
-  plan, after 1:1 text works.
-
----
-
-## Binary data
-
-Same pipeline as iOS. Keys, ciphertexts, and wire payloads are bytes end to end — protobuf
-`bytes` or CFE. No base64 in message processing, session management, or storage. Base64 only
-at true text-transport boundaries (QR, invite links). Session state that the Orchestrator
-asks to persist comes from `export_session_bytes_for`, not JSON.
-
----
-
-## Code conventions
-
-- Screens are Ratatui `Widget` impls in construct-screens. State lives in `App`; screens borrow
-  it.
-- User-facing copy is plain language ("people / chats / device", never "node / stream /
-  replica"). Product name **Konstruct** in Latin. Code identifiers keep domain names.
-- Config: `~/.config/construct-tui/` (`session.enc`, `config.json`). Data:
-  `~/.local/share/construct-tui/` (`messages.db`, `konstruct.log`). Argon2id is 32 MiB.
-- Comment only non-obvious logic. A field left out on purpose at a boundary must say so in
-  a comment — an uncommented omission is indistinguishable from a forgotten one.
-- [Conventional Commits](https://www.conventionalcommits.org/): `feat(scope): …`,
-  `fix(scope): …`, `refactor(scope): …`, `chore(scope): …`.
-
----
-
-## Testing
-
-**The target is not a coverage number.** A test that cannot fail is worse than no test —
-it occupies the place where someone would otherwise have looked. Extract the decision
-(identity space, handshake-vs-leftover, cursor prefix) and mutate it; do not assert that a
-procedure returned. Method: `~/Code/construct-docs/decisions/testing-by-pure-decision.md`.
-
-This crate currently tests storage and safety-number helpers only. Live 1:1 against iOS is
-the gate for phase B, not a green `cargo test`.
-
-There is no CI. Do not add a workflow that cannot compile this crate (sibling path deps).
-CI was removed 2026-06-19 for that reason.
-
----
-
-## Documentation & session notes
-
-Docs live in `~/Code/construct-docs`. **The vault's `AGENTS.md` is authoritative** for
-structure and writing rules. If a path is missing, search the domain folder rather than
-trusting an old link.
-
-After any session with architectural changes, design decisions, root-cause analysis or
-non-obvious choices:
-
-1. Write `sessions/YYYY-MM-DD-<topic>.md` (Context / What Changed / **Why** / Decisions /
-   Open Questions) — `## Why` with rejected alternatives is mandatory.
-2. If it constrains future work, add or update `decisions/<slug>.md`.
-3. Patch the affected spec in its domain folder in the **same** session.
-4. Append one line to `~/Code/construct-docs/log.md`.
-
-## Git workflow (branch + PR only)
-
-**Never commit on `main`.** Every change goes on a topic branch cut from an up-to-date `main`
-(`feat|fix|docs|chore|test/<topic>`) and lands through a GitHub pull request. Agents push and
-open the PR only when asked.
-
-`main` is what a release is built from, so it moves only by a reviewed merge. From 2026-09-11 to
-2026-10-01 changes went straight to `main` across the construct-* repos — two people on the
-project made a branch per change look like ceremony. That was reversed on purpose: the habit has
-to be in place before there is a release for it to break.
-
-A commit that landed on `main` by mistake and is not pushed moves off it with
-`git branch <topic> && git reset --keep origin/main && git switch <topic>`. Pushed history is
-never rewritten.
+- **Never commit on `main`.** Topic branch (`feat|fix|docs|chore|test/<topic>`) from an up-to-date `main`, PR into `main`. Conventional Commits. Agents push and open the PR only when asked.
+- Check branch and `git status` before every commit; never `checkout -- .`, `reset --hard` or `stash` in a shared tree; never rewrite pushed history. A commit made on `main` by mistake and not pushed: `git branch <topic> && git reset --keep origin/main && git switch <topic>`.
+- Docs live in `~/Code/construct-docs` (its `AGENTS.md` is authoritative). After work: progress to the task note; a root cause or rejected alternatives to `sessions/` (with `## Why`); a constraint to `decisions/`; one line to `log.md`.
