@@ -32,6 +32,12 @@ dirs = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
+# The client's rustls fork (construct-client Cargo.toml, `[patch.crates-io]`): a patch applies
+# only in the workspace that declares it, and this one builds construct-client as a path
+# dependency — without it the client's VEIL hello does not compile here.
+[patch.crates-io]
+rustls = { git = "https://github.com/maxeliseyev/rustls.git", rev = "7df70d14" }
+
 [profile.release]
 opt-level = "s"
 lto = true
